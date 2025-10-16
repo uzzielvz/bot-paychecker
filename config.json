@@ -1,0 +1,28 @@
+{
+  "cortes_horarios": [
+    {
+      "nombre": "Corte Matutino",
+      "hora_inicio": "09:00",
+      "hora_fin": "12:00"
+    },
+    {
+      "nombre": "Corte Vespertino",
+      "hora_inicio": "12:01",
+      "hora_fin": "15:00"
+    },
+    {
+      "nombre": "Corte Tarde",
+      "hora_inicio": "15:01",
+      "hora_fin": "23:59"
+    }
+  ],
+  "intervalo_monitoreo_minutos": 2,
+  "rutas": {
+    "input": "input/",
+    "output": "output/",
+    "database": "database/",
+    "logs": "logs/",
+    "processed": "processed/"
+  }
+}
+
