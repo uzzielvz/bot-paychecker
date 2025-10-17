@@ -16,15 +16,24 @@ class WhatsAppExtractor:
         self.cortes_horarios = self.config['cortes_horarios']
         
         # Patrón para detectar líneas de mensaje de WhatsApp
-        # Formato: D/M/YYYY, H:MM a. m./p. m. - Remitente: Mensaje
+        # Formato real: [D/M/YY, H:MM:SS] Remitente: Mensaje
+        # También soporta formato sin corchetes para compatibilidad
         self.whatsapp_pattern = re.compile(
-            r'^(\d{1,2}/\d{1,2}/\d{4}),\s+(\d{1,2}:\d{2}\s+[ap]\.\s+m\.)\s+-\s+([^:]+):\s+(.*)$'
+            r'^\[?(\d{1,2}/\d{1,2}/\d{2,4}),\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s+[ap]\.\s+m\.)?)\]?\s+([^:]+):\s+(.*)$'
         )
         
         # Patrón 1: Formato compacto (una línea)
         # Ejemplo: Nueva Luz 000031/ Puebla/ pago $5,852/ ahorro/ $ 348
+        # También: Magia 000055/ puebla/ $9,045/ $443 (sin palabras pago/ahorro)
         self.pattern_compact = re.compile(
-            r'([A-Za-záéíóúñÑ\s]+?)\s*(\d{6})\s*/\s*([A-Za-záéíóúñÑ]+)\s*/\s*[Pp]ago\s*\$?\s*([\d,]+)\s*/\s*[Aa]horro\s*/?\s*\$?\s*([\d,]+)',
+            r'([A-Za-záéíóúñÑ\s]+?)\s*(\d{6})\s*/\s*([A-Za-záéíóúñÑ]+)\s*/\s*(?:[Pp]ago\s*)?\$?\s*([\d,]+)\s*/?\s*(?:[Aa]horro\s*)?\$?\s*([\d,]+)',
+            re.IGNORECASE
+        )
+        
+        # Patrón adicional para formato: "Nombre ID pago ahorro" (sin separadores /)
+        # Ejemplo: Bienvenidos 000094 12 920.11 pago 775.89 ahorro
+        self.pattern_compact_simple = re.compile(
+            r'([A-Za-záéíóúñÑ\s]+?)\s*(\d{6})\s+(?:\d+\s+)?([\d,]+\.?\d*)\s+[Pp]ago\s+([\d,]+\.?\d*)\s+[Aa]horro',
             re.IGNORECASE
         )
         
@@ -69,12 +78,29 @@ class WhatsAppExtractor:
         
         # Convertir fecha y hora a datetime
         try:
-            # Formato: "7/10/2025, 9:55 p. m."
-            fecha_hora_str = f"{fecha_str} {hora_str}"
-            # Normalizar formato de a.m./p.m.
-            fecha_hora_str = fecha_hora_str.replace('a. m.', 'AM').replace('p. m.', 'PM')
-            fecha_hora = datetime.strptime(fecha_hora_str, '%d/%m/%Y %I:%M %p')
-        except ValueError:
+            # Detectar si tiene año corto (YY) o largo (YYYY)
+            partes_fecha = fecha_str.split('/')
+            if len(partes_fecha[2]) == 2:
+                # Año corto, convertir a 4 dígitos
+                año_corto = int(partes_fecha[2])
+                año_completo = 2000 + año_corto if año_corto < 50 else 1900 + año_corto
+                fecha_str = f"{partes_fecha[0]}/{partes_fecha[1]}/{año_completo}"
+            
+            # Detectar formato de hora
+            if 'a. m.' in hora_str or 'p. m.' in hora_str:
+                # Formato 12 horas con a.m./p.m.
+                fecha_hora_str = f"{fecha_str} {hora_str}"
+                fecha_hora_str = fecha_hora_str.replace('a. m.', 'AM').replace('p. m.', 'PM')
+                fecha_hora = datetime.strptime(fecha_hora_str, '%d/%m/%Y %I:%M %p')
+            else:
+                # Formato 24 horas (puede incluir segundos o no)
+                if hora_str.count(':') == 2:
+                    # Con segundos: 17:13:49
+                    fecha_hora = datetime.strptime(f"{fecha_str} {hora_str}", '%d/%m/%Y %H:%M:%S')
+                else:
+                    # Sin segundos: 17:13
+                    fecha_hora = datetime.strptime(f"{fecha_str} {hora_str}", '%d/%m/%Y %H:%M')
+        except (ValueError, IndexError) as e:
             return None
         
         return {
@@ -97,28 +123,44 @@ class WhatsAppExtractor:
         return "Sin Corte"
     
     def limpiar_numero(self, numero_str: str) -> float:
-        """Limpia y convierte string numérico a float (elimina $, comas, espacios)"""
-        numero_limpio = numero_str.replace('$', '').replace(',', '').replace(' ', '').strip()
+        """Limpia y convierte string numérico a float (elimina $, comas, espacios, asteriscos)"""
+        numero_limpio = numero_str.replace('$', '').replace(',', '').replace(' ', '').replace('*', '').strip()
         try:
             return float(numero_limpio)
         except ValueError:
             return 0.0
     
+    def limpiar_texto(self, texto: str) -> str:
+        """Limpia texto eliminando asteriscos de markdown y espacios extra"""
+        return texto.replace('*', '').strip()
+    
     def extraer_pago_compacto(self, contenido: str) -> Optional[Dict]:
         """Extrae datos de pago en formato compacto (una línea)"""
+        # Intentar formato con separadores /
         match = self.pattern_compact.search(contenido)
-        if not match:
-            return None
+        if match:
+            grupo, id_grupo, sucursal, pago_str, ahorro_str = match.groups()
+            return {
+                'grupo': self.limpiar_texto(grupo),
+                'id_grupo': id_grupo.strip(),
+                'sucursal': self.limpiar_texto(sucursal),
+                'pago': self.limpiar_numero(pago_str),
+                'ahorro': self.limpiar_numero(ahorro_str)
+            }
         
-        grupo, id_grupo, sucursal, pago_str, ahorro_str = match.groups()
+        # Intentar formato simple: "Nombre ID pago ahorro"
+        match = self.pattern_compact_simple.search(contenido)
+        if match:
+            grupo, id_grupo, pago_str, ahorro_str = match.groups()
+            return {
+                'grupo': self.limpiar_texto(grupo),
+                'id_grupo': id_grupo.strip(),
+                'sucursal': 'N/A',
+                'pago': self.limpiar_numero(pago_str),
+                'ahorro': self.limpiar_numero(ahorro_str)
+            }
         
-        return {
-            'grupo': grupo.strip(),
-            'id_grupo': id_grupo.strip(),
-            'sucursal': sucursal.strip(),
-            'pago': self.limpiar_numero(pago_str),
-            'ahorro': self.limpiar_numero(ahorro_str)
-        }
+        return None
     
     def extraer_pago_multilinea(self, lineas_buffer: List[str]) -> Optional[Dict]:
         """Extrae datos de pago en formato multilínea (múltiples líneas)"""
@@ -133,7 +175,7 @@ class WhatsAppExtractor:
         
         # Si encontramos al menos grupo, id y pago, es válido
         if match_grupo and match_id and match_pago:
-            grupo = match_grupo.group(1).strip()
+            grupo = self.limpiar_texto(match_grupo.group(1))
             id_grupo = match_id.group(1).strip()
             pago = self.limpiar_numero(match_pago.group(1))
             ahorro = self.limpiar_numero(match_ahorro.group(1)) if match_ahorro else 0.0
