@@ -19,11 +19,9 @@ def mostrar_menu():
     print(" SISTEMA DE EXTRACCIÓN DE PAGOS WHATSAPP → EXCEL")
     print("="*60)
     print("\nOpciones:")
-    print("  1. Iniciar monitoreo continuo")
-    print("  2. Procesar archivo específico (una vez)")
-    print("  3. Ver estadísticas de la base de datos")
-    print("  4. Generar/Actualizar Excel desde la base de datos")
-    print("  5. Procesar todos los archivos en input/")
+    print("  1. Iniciar monitoreo automático")
+    print("  2. Generar Excel actualizado")
+    print("  3. Procesar todos los archivos pendientes")
     print("  0. Salir")
     print("-"*60)
 
@@ -172,10 +170,7 @@ def procesar_todos_archivos():
 
 def main():
     """Función principal"""
-    print("\n¡Bienvenido al Sistema de Extracción de Pagos WhatsApp!")
-    print("\nAsegúrate de haber activado el entorno virtual:")
-    print("  venv\\Scripts\\activate  (Windows)")
-    print("  source venv/bin/activate  (Linux/Mac)")
+    print("\nSistema de Extracción de Pagos WhatsApp → Excel")
     
     # Verificar que las carpetas existan
     carpetas = ['input', 'output', 'database', 'logs', 'processed']
@@ -194,30 +189,22 @@ def main():
                 monitor.iniciar_monitoreo()
             
             elif opcion == '2':
-                # Procesar archivo específico
-                procesar_archivo_especifico()
-            
-            elif opcion == '3':
-                # Mostrar estadísticas
-                mostrar_estadisticas()
-            
-            elif opcion == '4':
                 # Generar Excel
                 generar_excel()
             
-            elif opcion == '5':
+            elif opcion == '3':
                 # Procesar todos los archivos
                 procesar_todos_archivos()
             
             elif opcion == '0':
-                print("\n¡Hasta luego!")
+                print("\nSistema cerrado correctamente")
                 sys.exit(0)
             
             else:
-                print("\nOpción no válida. Por favor selecciona 0-5.")
+                print("\nOpción no válida. Por favor selecciona 0-3.")
         
         except KeyboardInterrupt:
-            print("\n\n¡Hasta luego!")
+            print("\n\nSistema cerrado correctamente")
             sys.exit(0)
         except Exception as e:
             print(f"\nError: {e}")
