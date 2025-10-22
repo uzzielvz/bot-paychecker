@@ -28,11 +28,10 @@ class ExcelManager:
         ws_datos = wb.active
         ws_datos.title = "Pagos"
         
-        # Encabezados
+        # Encabezados mejorados
         headers = [
-            'ID', 'Fecha Mensaje', 'Hora', 'Corte Horario', 
-            'Grupo', 'ID Grupo', 'Sucursal', 
-            'Pago', 'Ahorro', 'Remitente', 'Fecha Procesamiento'
+            'ID Grupo', 'Grupo', 'Fecha', 'Hora', 
+            'Pago', 'Ahorro', 'Total', 'Corte Horario'
         ]
         
         # Estilo de encabezados
@@ -56,40 +55,47 @@ class ExcelManager:
             cell.alignment = header_alignment
             cell.border = border
         
-        # Escribir datos
-        for row_num, pago in enumerate(pagos, 2):
-            fecha_mensaje = datetime.fromisoformat(pago['fecha_mensaje']) if isinstance(pago['fecha_mensaje'], str) else pago['fecha_mensaje']
-            fecha_procesamiento = datetime.fromisoformat(pago['fecha_procesamiento']) if isinstance(pago['fecha_procesamiento'], str) else pago['fecha_procesamiento']
-            
-            ws_datos.cell(row=row_num, column=1, value=pago['id'])
-            ws_datos.cell(row=row_num, column=2, value=fecha_mensaje.strftime('%d/%m/%Y'))
-            ws_datos.cell(row=row_num, column=3, value=fecha_mensaje.strftime('%I:%M %p'))
-            ws_datos.cell(row=row_num, column=4, value=pago['corte_horario'])
-            ws_datos.cell(row=row_num, column=5, value=pago['grupo'])
-            ws_datos.cell(row=row_num, column=6, value=pago['id_grupo'])
-            ws_datos.cell(row=row_num, column=7, value=pago['sucursal'])
-            ws_datos.cell(row=row_num, column=8, value=pago['pago'])
-            ws_datos.cell(row=row_num, column=9, value=pago['ahorro'])
-            ws_datos.cell(row=row_num, column=10, value=pago['remitente_whatsapp'])
-            ws_datos.cell(row=row_num, column=11, value=fecha_procesamiento.strftime('%d/%m/%Y %I:%M %p'))
+        # Ordenar pagos por grupo y fecha
+        pagos_ordenados = sorted(pagos, key=lambda x: (x['id_grupo'], x['fecha_mensaje']))
         
-        # Formato de moneda para columnas de Pago y Ahorro
+        # Escribir datos
+        for row_num, pago in enumerate(pagos_ordenados, 2):
+            fecha_mensaje = datetime.fromisoformat(pago['fecha_mensaje']) if isinstance(pago['fecha_mensaje'], str) else pago['fecha_mensaje']
+            
+            total = pago['pago'] + pago['ahorro']
+            
+            ws_datos.cell(row=row_num, column=1, value=pago['id_grupo'])
+            ws_datos.cell(row=row_num, column=2, value=pago['grupo'])
+            ws_datos.cell(row=row_num, column=3, value=fecha_mensaje.strftime('%d/%m/%Y'))
+            ws_datos.cell(row=row_num, column=4, value=fecha_mensaje.strftime('%H:%M:%S'))
+            ws_datos.cell(row=row_num, column=5, value=pago['pago'])
+            ws_datos.cell(row=row_num, column=6, value=pago['ahorro'])
+            ws_datos.cell(row=row_num, column=7, value=total)
+            ws_datos.cell(row=row_num, column=8, value=pago['corte_horario'])
+        
+        # Formato de moneda para columnas de Pago, Ahorro y Total
         for row in range(2, len(pagos) + 2):
-            ws_datos.cell(row=row, column=8).number_format = '$#,##0.00'
-            ws_datos.cell(row=row, column=9).number_format = '$#,##0.00'
+            ws_datos.cell(row=row, column=5).number_format = '$#,##0.00'
+            ws_datos.cell(row=row, column=6).number_format = '$#,##0.00'
+            ws_datos.cell(row=row, column=7).number_format = '$#,##0.00'
         
         # Ajustar ancho de columnas
         column_widths = {
-            'A': 8, 'B': 14, 'C': 12, 'D': 18,
-            'E': 20, 'F': 12, 'G': 15,
-            'H': 14, 'I': 14, 'J': 25, 'K': 20
+            'A': 12,  # ID Grupo
+            'B': 25,  # Grupo
+            'C': 13,  # Fecha
+            'D': 11,  # Hora
+            'E': 14,  # Pago
+            'F': 14,  # Ahorro
+            'G': 14,  # Total
+            'H': 18   # Corte Horario
         }
         
         for col, width in column_widths.items():
             ws_datos.column_dimensions[col].width = width
         
         # Habilitar filtros
-        ws_datos.auto_filter.ref = f"A1:K{len(pagos) + 1}"
+        ws_datos.auto_filter.ref = f"A1:H{len(pagos) + 1}"
         
         # Hoja de resumen
         self._crear_hoja_resumen(wb, pagos)
@@ -98,18 +104,18 @@ class ExcelManager:
         wb.save(self.excel_path)
     
     def _crear_hoja_resumen(self, wb: Workbook, pagos: List[Dict]):
-        """Crea una hoja con resumen y estadísticas"""
-        ws_resumen = wb.create_sheet("Resumen")
+        """Crea una hoja con resumen por grupos y estadísticas"""
+        ws_resumen = wb.create_sheet("Resumen por Grupos")
         
         # Título
-        ws_resumen['A1'] = "RESUMEN DE PAGOS"
+        ws_resumen['A1'] = "RESUMEN POR GRUPOS"
         ws_resumen['A1'].font = Font(bold=True, size=16)
         ws_resumen['A1'].alignment = Alignment(horizontal="center")
-        ws_resumen.merge_cells('A1:D1')
+        ws_resumen.merge_cells('A1:F1')
         
         # Fecha de generación
         ws_resumen['A3'] = "Fecha de generación:"
-        ws_resumen['B3'] = datetime.now().strftime('%d/%m/%Y %I:%M %p')
+        ws_resumen['B3'] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
         ws_resumen['A3'].font = Font(bold=True)
         
         # Total de registros
@@ -120,6 +126,7 @@ class ExcelManager:
         # Cálculos totales
         total_pago = sum(p['pago'] for p in pagos)
         total_ahorro = sum(p['ahorro'] for p in pagos)
+        total_general = total_pago + total_ahorro
         
         ws_resumen['A5'] = "Total Pagos:"
         ws_resumen['B5'] = total_pago
@@ -130,6 +137,11 @@ class ExcelManager:
         ws_resumen['B6'] = total_ahorro
         ws_resumen['B6'].number_format = '$#,##0.00'
         ws_resumen['A6'].font = Font(bold=True)
+        
+        ws_resumen['A7'] = "Total General:"
+        ws_resumen['B7'] = total_general
+        ws_resumen['B7'].number_format = '$#,##0.00'
+        ws_resumen['A7'].font = Font(bold=True, color="FF0000")
         
         # Resumen por corte
         ws_resumen['A8'] = "RESUMEN POR CORTE HORARIO"
@@ -167,11 +179,63 @@ class ExcelManager:
             ws_resumen.cell(row=row, column=4).number_format = '$#,##0.00'
             row += 1
         
+        # Resumen por grupos
+        row += 2
+        ws_resumen.cell(row=row, column=1, value="RESUMEN POR GRUPOS")
+        ws_resumen.cell(row=row, column=1).font = Font(bold=True, size=14)
+        row += 1
+        
+        # Headers para grupos
+        ws_resumen.cell(row=row, column=1, value="ID Grupo")
+        ws_resumen.cell(row=row, column=2, value="Grupo")
+        ws_resumen.cell(row=row, column=3, value="Cantidad")
+        ws_resumen.cell(row=row, column=4, value="Total Pago")
+        ws_resumen.cell(row=row, column=5, value="Total Ahorro")
+        ws_resumen.cell(row=row, column=6, value="Total General")
+        
+        for col in range(1, 7):
+            ws_resumen.cell(row=row, column=col).fill = header_fill
+            ws_resumen.cell(row=row, column=col).font = header_font
+        
+        # Agrupar por grupo
+        grupos = {}
+        for pago in pagos:
+            id_grupo = pago['id_grupo']
+            if id_grupo not in grupos:
+                grupos[id_grupo] = {
+                    'nombre': pago['grupo'],
+                    'cantidad': 0,
+                    'pago': 0,
+                    'ahorro': 0
+                }
+            grupos[id_grupo]['cantidad'] += 1
+            grupos[id_grupo]['pago'] += pago['pago']
+            grupos[id_grupo]['ahorro'] += pago['ahorro']
+        
+        row += 1
+        for id_grupo in sorted(grupos.keys()):
+            data = grupos[id_grupo]
+            total_grupo = data['pago'] + data['ahorro']
+            
+            ws_resumen.cell(row=row, column=1, value=id_grupo)
+            ws_resumen.cell(row=row, column=2, value=data['nombre'])
+            ws_resumen.cell(row=row, column=3, value=data['cantidad'])
+            ws_resumen.cell(row=row, column=4, value=data['pago'])
+            ws_resumen.cell(row=row, column=5, value=data['ahorro'])
+            ws_resumen.cell(row=row, column=6, value=total_grupo)
+            
+            ws_resumen.cell(row=row, column=4).number_format = '$#,##0.00'
+            ws_resumen.cell(row=row, column=5).number_format = '$#,##0.00'
+            ws_resumen.cell(row=row, column=6).number_format = '$#,##0.00'
+            row += 1
+        
         # Ajustar anchos
-        ws_resumen.column_dimensions['A'].width = 25
-        ws_resumen.column_dimensions['B'].width = 12
-        ws_resumen.column_dimensions['C'].width = 16
+        ws_resumen.column_dimensions['A'].width = 12
+        ws_resumen.column_dimensions['B'].width = 25
+        ws_resumen.column_dimensions['C'].width = 12
         ws_resumen.column_dimensions['D'].width = 16
+        ws_resumen.column_dimensions['E'].width = 16
+        ws_resumen.column_dimensions['F'].width = 16
     
     def generar_excel(self, pagos: List[Dict]):
         """Genera o actualiza el archivo Excel con los pagos"""

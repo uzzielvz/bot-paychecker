@@ -172,11 +172,11 @@ class PagosExtractorGUI:
             text="Procesar Archivos",
             bg=self.colors['button'],
             fg=self.colors['white'],
-            width=18,
+            width=15,
             height=2,
             command=self._procesar_archivos
         )
-        btn_procesar.pack(side=tk.LEFT, expand=True, padx=(0, 10))
+        btn_procesar.pack(side=tk.LEFT, expand=True, padx=(0, 5))
         
         # Botón Generar Excel
         btn_excel = MinimalButton(
@@ -184,11 +184,23 @@ class PagosExtractorGUI:
             text="Generar Excel",
             bg=self.colors['accent'],
             fg=self.colors['white'],
-            width=18,
+            width=15,
             height=2,
             command=self._generar_excel
         )
-        btn_excel.pack(side=tk.LEFT, expand=True, padx=(10, 0))
+        btn_excel.pack(side=tk.LEFT, expand=True, padx=(5, 5))
+        
+        # Botón Abrir Excel
+        btn_abrir = MinimalButton(
+            button_frame,
+            text="Abrir Excel",
+            bg=self.colors['button'],
+            fg=self.colors['white'],
+            width=15,
+            height=2,
+            command=self._abrir_excel
+        )
+        btn_abrir.pack(side=tk.LEFT, expand=True, padx=(5, 0))
     
     def _crear_area_mensajes(self, parent):
         """Crea el área de mensajes simple"""
@@ -437,6 +449,24 @@ class PagosExtractorGUI:
                 self.is_processing = False
         
         threading.Thread(target=generar, daemon=True).start()
+    
+    def _abrir_excel(self):
+        """Abre el archivo Excel generado"""
+        excel_path = os.path.abspath(self.excel_manager.excel_path)
+        
+        if os.path.exists(excel_path):
+            try:
+                os.startfile(excel_path)
+                self._log("ℹ Excel abierto")
+            except Exception as e:
+                self._log(f"✗ Error al abrir Excel: {e}")
+                messagebox.showerror("Error", f"No se pudo abrir el Excel:\n{e}")
+        else:
+            self._log("✗ El archivo Excel no existe")
+            messagebox.showwarning(
+                "Archivo no encontrado",
+                "El archivo Excel no existe.\n\nGenera el Excel primero usando el botón 'Generar Excel'."
+            )
 
 
 def main():
