@@ -36,6 +36,8 @@ class DatabaseManager:
                 sucursal TEXT,
                 pago REAL NOT NULL,
                 ahorro REAL NOT NULL,
+                total REAL NOT NULL,
+                numero_pago TEXT,
                 mensaje_original TEXT NOT NULL,
                 archivo_origen TEXT NOT NULL,
                 remitente_whatsapp TEXT NOT NULL,
@@ -102,11 +104,13 @@ class DatabaseManager:
                     sucursal,
                     pago,
                     ahorro,
+                    total,
+                    numero_pago,
                     mensaje_original,
                     archivo_origen,
                     remitente_whatsapp,
                     hash_mensaje
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 pago['fecha_hora'],
                 datetime.now(),
@@ -116,6 +120,8 @@ class DatabaseManager:
                 pago.get('sucursal', 'N/A'),
                 pago['pago'],
                 pago['ahorro'],
+                pago.get('total', pago['pago'] + pago['ahorro']),
+                pago.get('numero_pago'),
                 pago['mensaje_original'],
                 archivo_origen,
                 pago['remitente'],
@@ -174,6 +180,8 @@ class DatabaseManager:
                 sucursal,
                 pago,
                 ahorro,
+                total,
+                numero_pago,
                 mensaje_original,
                 archivo_origen,
                 remitente_whatsapp
@@ -236,9 +244,9 @@ class DatabaseManager:
         cursor.execute('SELECT COUNT(*) FROM pagos')
         total_pagos = cursor.fetchone()[0]
         
-        # Suma total de pagos y ahorros
-        cursor.execute('SELECT SUM(pago), SUM(ahorro) FROM pagos')
-        suma_pago, suma_ahorro = cursor.fetchone()
+        # Suma total de pagos, ahorros y totales
+        cursor.execute('SELECT SUM(pago), SUM(ahorro), SUM(total) FROM pagos')
+        suma_pago, suma_ahorro, suma_total = cursor.fetchone()
         
         # Pagos por corte
         cursor.execute('''
@@ -273,6 +281,7 @@ class DatabaseManager:
             'total_pagos': total_pagos,
             'suma_total_pago': suma_pago or 0,
             'suma_total_ahorro': suma_ahorro or 0,
+            'suma_total_general': suma_total or 0,
             'por_corte': por_corte,
             'por_grupo': por_grupo,
             'por_sucursal': por_sucursal

@@ -37,12 +37,15 @@ class WhatsAppExtractor:
             re.IGNORECASE
         )
         
-        # Patrón 2: Formato multilínea (buffer de 4 líneas)
-        # Ejemplo: Grupo CATALEYA \n ID000080 \n PAGO 7606 \n AHORRO 644
-        self.pattern_multiline_grupo = re.compile(r'[Gg]rupo\s+([A-Za-záéíóúñÑ\s]+)', re.IGNORECASE)
+        # Patrón 2: Formato multilínea (nuevo formato)
+        # Ejemplo: Grupo BIENVENIDOS \n ID 000094 \n Pago 12921 \n Ahorro 1293 \n Sucursal Ixtapaluca
+        self.pattern_multiline_grupo = re.compile(r'[Gg]rupo\s+([A-Za-záéíóúñÑ\s]+?)(?:\n|$)', re.IGNORECASE)
         self.pattern_multiline_id = re.compile(r'ID\s*(\d{6})', re.IGNORECASE)
-        self.pattern_multiline_pago = re.compile(r'PAGO\s*\$?\s*([\d,]+)', re.IGNORECASE)
-        self.pattern_multiline_ahorro = re.compile(r'AHORRO\s*\$?\s*([\d,]+)', re.IGNORECASE)
+        self.pattern_multiline_pago = re.compile(r'[Pp]ago\s*\$?\s*([\d,]+\.?\d*)', re.IGNORECASE)
+        self.pattern_multiline_ahorro = re.compile(r'[Aa]horro\s*\$?\s*([\d,]+\.?\d*)', re.IGNORECASE)
+        self.pattern_multiline_sucursal = re.compile(r'[Ss]ucursal\s+([A-Za-záéíóúñÑ\s]+?)(?:\n|$|Número)', re.IGNORECASE)
+        self.pattern_multiline_numero_pago = re.compile(r'[Nn]úmero\s+de\s+pago\s+(\d+)|[Nn]\.?\s*[Pp]ago\s+(\d+)', re.IGNORECASE)
+        self.pattern_multiline_total = re.compile(r'[Tt]otal\s*\$?\s*([\d,]+\.?\d*)', re.IGNORECASE)
         
     def es_mensaje_sistema(self, contenido: str) -> bool:
         """Identifica y filtra mensajes del sistema de WhatsApp"""
@@ -172,6 +175,9 @@ class WhatsAppExtractor:
         match_id = self.pattern_multiline_id.search(contenido_completo)
         match_pago = self.pattern_multiline_pago.search(contenido_completo)
         match_ahorro = self.pattern_multiline_ahorro.search(contenido_completo)
+        match_sucursal = self.pattern_multiline_sucursal.search(contenido_completo)
+        match_numero_pago = self.pattern_multiline_numero_pago.search(contenido_completo)
+        match_total = self.pattern_multiline_total.search(contenido_completo)
         
         # Si encontramos al menos grupo, id y pago, es válido
         if match_grupo and match_id and match_pago:
@@ -179,13 +185,21 @@ class WhatsAppExtractor:
             id_grupo = match_id.group(1).strip()
             pago = self.limpiar_numero(match_pago.group(1))
             ahorro = self.limpiar_numero(match_ahorro.group(1)) if match_ahorro else 0.0
+            sucursal = self.limpiar_texto(match_sucursal.group(1)) if match_sucursal else 'N/A'
+            numero_pago = None
+            if match_numero_pago:
+                # El patrón tiene dos grupos de captura, usar el que no sea None
+                numero_pago = match_numero_pago.group(1) or match_numero_pago.group(2)
+            total = self.limpiar_numero(match_total.group(1)) if match_total else (pago + ahorro)
             
             return {
                 'grupo': grupo,
                 'id_grupo': id_grupo,
-                'sucursal': 'N/A',  # No siempre está en formato multilínea
+                'sucursal': sucursal,
                 'pago': pago,
-                'ahorro': ahorro
+                'ahorro': ahorro,
+                'total': total,
+                'numero_pago': numero_pago
             }
         
         return None

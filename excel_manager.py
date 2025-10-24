@@ -31,7 +31,7 @@ class ExcelManager:
         # Encabezados mejorados
         headers = [
             'ID Grupo', 'Grupo', 'Fecha', 'Hora', 
-            'Pago', 'Ahorro', 'Total', 'Corte Horario'
+            'Pago', 'Ahorro', 'Total', 'Número Pago', 'Sucursal', 'Corte Horario'
         ]
         
         # Estilo de encabezados
@@ -62,7 +62,7 @@ class ExcelManager:
         for row_num, pago in enumerate(pagos_ordenados, 2):
             fecha_mensaje = datetime.fromisoformat(pago['fecha_mensaje']) if isinstance(pago['fecha_mensaje'], str) else pago['fecha_mensaje']
             
-            total = pago['pago'] + pago['ahorro']
+            total = pago.get('total', pago['pago'] + pago['ahorro'])
             
             ws_datos.cell(row=row_num, column=1, value=pago['id_grupo'])
             ws_datos.cell(row=row_num, column=2, value=pago['grupo'])
@@ -71,7 +71,9 @@ class ExcelManager:
             ws_datos.cell(row=row_num, column=5, value=pago['pago'])
             ws_datos.cell(row=row_num, column=6, value=pago['ahorro'])
             ws_datos.cell(row=row_num, column=7, value=total)
-            ws_datos.cell(row=row_num, column=8, value=pago['corte_horario'])
+            ws_datos.cell(row=row_num, column=8, value=pago.get('numero_pago', ''))
+            ws_datos.cell(row=row_num, column=9, value=pago.get('sucursal', 'N/A'))
+            ws_datos.cell(row=row_num, column=10, value=pago['corte_horario'])
         
         # Formato de moneda para columnas de Pago, Ahorro y Total
         for row in range(2, len(pagos) + 2):
@@ -88,14 +90,16 @@ class ExcelManager:
             'E': 14,  # Pago
             'F': 14,  # Ahorro
             'G': 14,  # Total
-            'H': 18   # Corte Horario
+            'H': 15,  # Número Pago
+            'I': 20,  # Sucursal
+            'J': 18   # Corte Horario
         }
         
         for col, width in column_widths.items():
             ws_datos.column_dimensions[col].width = width
         
         # Habilitar filtros
-        ws_datos.auto_filter.ref = f"A1:H{len(pagos) + 1}"
+        ws_datos.auto_filter.ref = f"A1:J{len(pagos) + 1}"
         
         # Hoja de resumen
         self._crear_hoja_resumen(wb, pagos)
@@ -126,7 +130,7 @@ class ExcelManager:
         # Cálculos totales
         total_pago = sum(p['pago'] for p in pagos)
         total_ahorro = sum(p['ahorro'] for p in pagos)
-        total_general = total_pago + total_ahorro
+        total_general = sum(p.get('total', p['pago'] + p['ahorro']) for p in pagos)
         
         ws_resumen['A5'] = "Total Pagos:"
         ws_resumen['B5'] = total_pago
