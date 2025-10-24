@@ -8,9 +8,11 @@ import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
 import threading
 import os
+import shutil
 from pathlib import Path
 from datetime import datetime
 import queue
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from monitor import FileProcessor
 from database_manager import DatabaseManager
@@ -117,7 +119,7 @@ class PagosExtractorGUI:
         self._crear_footer()
     
     def _crear_zona_drop(self, parent):
-        """Crea la zona de selección de archivos"""
+        """Crea la zona de selección de archivos con soporte para drag and drop"""
         drop_frame = tk.Frame(
             parent,
             bg=self.colors['white'],
@@ -131,7 +133,7 @@ class PagosExtractorGUI:
         # Instrucciones
         info_label = tk.Label(
             drop_frame,
-            text="Haz clic aquí para seleccionar archivos de chat",
+            text="Arrastra archivos aquí o haz clic para seleccionar",
             font=("Segoe UI", 11),
             bg=self.colors['white'],
             fg=self.colors['fg'],
@@ -143,6 +145,12 @@ class PagosExtractorGUI:
         # Hacer que sea clickeable
         info_label.bind("<Button-1>", lambda e: self._seleccionar_archivos())
         drop_frame.bind("<Button-1>", lambda e: self._seleccionar_archivos())
+        
+        # Configurar drag and drop
+        drop_frame.drop_target_register(DND_FILES)
+        drop_frame.dnd_bind('<<Drop>>', self._on_drop)
+        drop_frame.dnd_bind('<<DragEnter>>', self._on_drag_enter)
+        drop_frame.dnd_bind('<<DragLeave>>', self._on_drag_leave)
         
         # Efecto hover
         def on_enter(e):
@@ -160,6 +168,112 @@ class PagosExtractorGUI:
         
         self.drop_frame = drop_frame
         self.info_label = info_label
+    
+    def _on_drag_enter(self, event):
+        """Maneja el evento cuando se arrastra un archivo sobre la zona"""
+        self.drop_frame.config(highlightbackground=self.colors['accent'])
+        self.info_label.config(fg=self.colors['accent'])
+        self.info_label.config(text="¡Suelta aquí para copiar archivos!")
+    
+    def _on_drag_leave(self, event):
+        """Maneja el evento cuando se deja de arrastrar sobre la zona"""
+        self.drop_frame.config(highlightbackground=self.colors['border'])
+        self.info_label.config(fg=self.colors['fg'])
+        self.info_label.config(text="Arrastra archivos aquí o haz clic para seleccionar")
+    
+    def _on_drop(self, event):
+        """Maneja el evento cuando se sueltan archivos en la zona"""
+        # Restaurar apariencia normal
+        self.drop_frame.config(highlightbackground=self.colors['border'])
+        self.info_label.config(fg=self.colors['fg'])
+        self.info_label.config(text="Arrastra archivos aquí o haz clic para seleccionar")
+        
+        # Obtener lista de archivos
+        archivos = self.root.tk.splitlist(event.data)
+        
+        # Filtrar solo archivos .txt
+        archivos_txt = [archivo for archivo in archivos if archivo.lower().endswith('.txt')]
+        
+        if not archivos_txt:
+            messagebox.showwarning("Archivos no válidos", "Solo se pueden procesar archivos .txt")
+            return
+        
+        # Copiar archivos a input/ y procesarlos
+        self._copiar_y_procesar_archivos(archivos_txt)
+    
+    def _copiar_y_procesar_archivos(self, archivos_origen):
+        """Copia archivos a input/ y los procesa"""
+        if self.is_processing:
+            messagebox.showwarning("Procesando", "Ya hay un procesamiento en curso")
+            return
+        
+        def copiar_y_procesar():
+            self.is_processing = True
+            try:
+                self._log(f"ℹ Copiando {len(archivos_origen)} archivo(s)...")
+                
+                archivos_copiados = []
+                for archivo_origen in archivos_origen:
+                    nombre = os.path.basename(archivo_origen)
+                    destino = os.path.join("input", nombre)
+                    
+                    # Si el archivo ya existe, agregar timestamp
+                    if os.path.exists(destino):
+                        nombre_base, extension = os.path.splitext(nombre)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        nombre = f"{nombre_base}_{timestamp}{extension}"
+                        destino = os.path.join("input", nombre)
+                    
+                    # Copiar archivo
+                    shutil.copy2(archivo_origen, destino)
+                    archivos_copiados.append(destino)
+                    self._log(f"✓ Copiado: {nombre}")
+                
+                # Procesar archivos copiados
+                self._log(f"ℹ Procesando {len(archivos_copiados)} archivo(s)...")
+                
+                total_insertados = 0
+                total_duplicados = 0
+                
+                for archivo in archivos_copiados:
+                    nombre = os.path.basename(archivo)
+                    self._log(f"ℹ {nombre}")
+                    
+                    resultado = self.processor.procesar_archivo(archivo)
+                    
+                    if 'error' in resultado:
+                        error_msg = resultado['error']
+                        if "Permission denied" in str(error_msg) and "pagos.xlsx" in str(error_msg):
+                            self._log(f"  ⚠ Excel abierto - se creó respaldo")
+                        else:
+                            self._log(f"  ✗ Error: {error_msg}")
+                    else:
+                        total_insertados += resultado['insertados']
+                        total_duplicados += resultado['duplicados']
+                        self._log(f"  ✓ {resultado['insertados']} nuevos, {resultado['duplicados']} duplicados")
+                
+                self._actualizar_estadisticas()
+                self._log(f"✓ Completado: {total_insertados} registros nuevos")
+                
+                # Verificar si se creó un respaldo
+                respaldo_creado = any("Permission denied" in str(resultado.get('error', '')) and "pagos.xlsx" in str(resultado.get('error', '')) 
+                                    for archivo in archivos_copiados 
+                                    for resultado in [self.processor.procesar_archivo(archivo)] 
+                                    if 'error' in resultado)
+                
+                mensaje = f"Archivos copiados y procesados\n\nNuevos: {total_insertados}\nDuplicados: {total_duplicados}"
+                if respaldo_creado:
+                    mensaje += "\n\n⚠ Se creó un Excel de respaldo porque el original está abierto"
+                
+                messagebox.showinfo("Éxito", mensaje)
+                
+            except Exception as e:
+                self._log(f"✗ Error: {e}")
+                messagebox.showerror("Error", f"Error al copiar/procesar archivos:\n{e}")
+            finally:
+                self.is_processing = False
+        
+        threading.Thread(target=copiar_y_procesar, daemon=True).start()
     
     def _crear_botones(self, parent):
         """Crea los botones principales"""
@@ -471,7 +585,7 @@ class PagosExtractorGUI:
 
 def main():
     """Función principal para ejecutar la aplicación"""
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
     app = PagosExtractorGUI(root)
     
     # Centrar ventana

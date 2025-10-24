@@ -247,10 +247,115 @@ class ExcelManager:
             print("No hay pagos para generar en Excel")
             return
         
-        # Siempre crear desde cero para tener datos actualizados
-        self.crear_excel_desde_cero(pagos)
-        print(f"Excel generado exitosamente: {self.excel_path}")
+        try:
+            # Siempre crear desde cero para tener datos actualizados
+            self.crear_excel_desde_cero(pagos)
+            print(f"Excel generado exitosamente: {self.excel_path}")
+            print(f"Total de registros: {len(pagos)}")
+            
+        except PermissionError:
+            # Si el archivo está abierto, crear uno con timestamp
+            print("El archivo Excel está abierto, creando respaldo...")
+            self._crear_excel_respaldo(pagos)
+            
+        except Exception as e:
+            print(f"Error al generar Excel: {e}")
+            raise e
+    
+    def _crear_excel_respaldo(self, pagos: List[Dict]):
+        """Crea un archivo Excel de respaldo cuando el original está abierto"""
+        from datetime import datetime
+        
+        # Crear nombre con timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        nombre_base, extension = os.path.splitext(self.excel_path)
+        respaldo_path = f"{nombre_base}_respaldo_{timestamp}{extension}"
+        
+        # Crear Excel de respaldo
+        wb = Workbook()
+        
+        # Hoja principal de datos
+        ws_datos = wb.active
+        ws_datos.title = "Pagos"
+        
+        # Encabezados mejorados
+        headers = [
+            'ID Grupo', 'Grupo', 'Fecha', 'Hora', 
+            'Pago', 'Ahorro', 'Total', 'Número Pago', 'Sucursal', 'Corte Horario'
+        ]
+        
+        # Estilo de encabezados
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Escribir encabezados
+        for col_num, header in enumerate(headers, 1):
+            cell = ws_datos.cell(row=1, column=col_num)
+            cell.value = header
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
+            cell.border = border
+        
+        # Ordenar pagos por grupo y fecha
+        pagos_ordenados = sorted(pagos, key=lambda x: (x['id_grupo'], x['fecha_mensaje']))
+        
+        # Escribir datos
+        for row_num, pago in enumerate(pagos_ordenados, 2):
+            fecha_mensaje = datetime.fromisoformat(pago['fecha_mensaje']) if isinstance(pago['fecha_mensaje'], str) else pago['fecha_mensaje']
+            
+            total = pago.get('total', pago['pago'] + pago['ahorro'])
+            
+            ws_datos.cell(row=row_num, column=1, value=pago['id_grupo'])
+            ws_datos.cell(row=row_num, column=2, value=pago['grupo'])
+            ws_datos.cell(row=row_num, column=3, value=fecha_mensaje.strftime('%d/%m/%Y'))
+            ws_datos.cell(row=row_num, column=4, value=fecha_mensaje.strftime('%H:%M:%S'))
+            ws_datos.cell(row=row_num, column=5, value=pago['pago'])
+            ws_datos.cell(row=row_num, column=6, value=pago['ahorro'])
+            ws_datos.cell(row=row_num, column=7, value=total)
+            ws_datos.cell(row=row_num, column=8, value=pago.get('numero_pago', ''))
+            ws_datos.cell(row=row_num, column=9, value=pago.get('sucursal', 'N/A'))
+            ws_datos.cell(row=row_num, column=10, value=pago['corte_horario'])
+        
+        # Formato de moneda para columnas de Pago, Ahorro y Total
+        for row in range(2, len(pagos) + 2):
+            ws_datos.cell(row=row, column=5).number_format = '$#,##0.00'
+            ws_datos.cell(row=row, column=6).number_format = '$#,##0.00'
+            ws_datos.cell(row=row, column=7).number_format = '$#,##0.00'
+        
+        # Ajustar ancho de columnas
+        column_widths = {
+            'A': 12,  # ID Grupo
+            'B': 25,  # Grupo
+            'C': 13,  # Fecha
+            'D': 11,  # Hora
+            'E': 14,  # Pago
+            'F': 14,  # Ahorro
+            'G': 14,  # Total
+            'H': 15,  # Número Pago
+            'I': 20,  # Sucursal
+            'J': 18   # Corte Horario
+        }
+        
+        for col, width in column_widths.items():
+            ws_datos.column_dimensions[col].width = width
+        
+        # Habilitar filtros
+        ws_datos.auto_filter.ref = f"A1:J{len(pagos) + 1}"
+        
+        # Guardar respaldo
+        wb.save(respaldo_path)
+        print(f"Excel de respaldo creado: {respaldo_path}")
         print(f"Total de registros: {len(pagos)}")
+        print("Cierra el Excel original y ejecuta 'Generar Excel' para actualizar el archivo principal")
 
 
 if __name__ == "__main__":
