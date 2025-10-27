@@ -1,0 +1,157 @@
+[24/10/25, 10:28:42] Pruebas de pago: ‎Creaste el grupo "Pruebas de pago".
+[24/10/25, 10:28:42] Pruebas de pago: ‎Los mensajes y las llamadas están cifrados de extremo a extremo. Solo las personas en este chat pueden leerlos, escucharlos o compartirlos.
+[24/10/25, 10:28:52] Uzziel: Amor, ignora este mensaje bb
+[24/10/25, 10:28:58] Uzziel: Este grupo completamente
+[24/10/25, 10:29:06] Uzziel: Nomas es pa hacer pruebas de mi sistema
+[24/10/25, 10:51:52] Uzziel: Grupo BIENVENIDOS 
+ID 000094
+Pago 12921
+Ahorro 1293 
+Sucursal Ixtapaluca
+[24/10/25, 10:53:04] Uzziel: Grupo Margaritas  
+ID 000162
+Pago 8136
+Ahorro 584
+Sucursal Tultitlan
+[24/10/25, 10:56:05] Uzziel: Grupo Independencia 
+ID 000083
+Pago 3344.03 
+Ahorro 195.97 
+Sucursal Tultitlan
+[24/10/25, 11:00:12] Uzziel: Grupo Exitosas San Juan 
+ID 000025
+Pago 3876.03
+Ahorro 323.97
+Número de pago 9
+[24/10/25, 11:03:09] Uzziel: Grupo Palomas Mensajeras 
+ID 000093
+Pago 3876.03
+Ahorro 491.97
+Sucursal Tultitlan 
+Número de pago 5
+[24/10/25, 11:04:53] Uzziel: Grupo La Cruz 
+ID 000115
+Pago 4180 
+Ahorro 304.96
+Total 4485
+Número de pago 4
+[24/10/25, 11:06:24] Uzziel: Grupo Buganbilias 
+ID 000050
+Pago 6004.05
+Ahorro 299.95
+Sucursal Tultitlan 
+Número de pago 8 ‎<Se editó este mensaje.>
+[24/10/25, 11:14:10] Uzziel: Grupo Jardines 
+ID 000095
+Pago 4180.04
+Ahorro 395.96 
+Sucursal Tultitlán 
+N Pago 5
+[24/10/25, 11:18:50] Uzziel: Grupo Reynas 
+ID 000079
+Pago 6916.06
+Ahorro 501.97
+Sucursal Tultitlan 
+N pago 6
+[24/10/25, 11:22:02] Uzziel: Las divinas 
+ID 000069
+Pago 8208.07
+Ahorro 439.93
+Sucursal Tultitlan 
+N Pago 6
+[24/10/25, 11:23:18] Uzziel: Grupo Las Torres 
+ID 000052
+Pago 6004.05
+Ahorro 864.95
+Sucursal Tultitlan 
+N pago 8 ‎<Se editó este mensaje.>
+[24/10/25, 11:25:50] Uzziel: Grupo Coacalco 
+ID 000145
+Pago 8976
+Ahorro 1459
+Sucursal Tultitlan 
+
+N pago 2 ‎<Se editó este mensaje.>
+[24/10/25, 14:00:37] Uzziel: GRUPO ACEITUNAS DE COCKTAIL
+ID 000003
+Pago 11400
+Ahorro 360
+[24/10/25, 14:01:43] Uzziel: GRUPO MAGIA 000055
+ID 000055
+Pago 9045
+Ahorro 443
+Sucursal Puebla ‎<Se editó este mensaje.>
+[24/10/25, 14:02:52] Uzziel: GRUPO PATRICIAS
+ID 0000053
+Pago 12966
+Ahorro 864
+Sucursal Puebla
+[26/10/25, 16:09:54] Uzziel: Grupo: Los capibaras
+ID: 000137
+Pago: $8,588
+Ahorro: $538
+Sucursal: Puebla
+
+Grupo: Las Comadres
+ID: 000120
+Pago: $12,160
+Ahorro: $640
+Sucursal: Puebla
+
+Grupo: Colibrí
+ID: 000118
+Pago: $14,104
+Ahorro: $205
+Sucursal: Puebla
+
+Grupo: Emprendedoras
+ID: 000148
+Pago: $4,809
+Ahorro: $440
+Sucursal: Ixtapaluca
+
+Grupo: Los efectivos
+ID: 000032
+Pago: $12,693
+Ahorro: $1,358
+Sucursal: Ixtapaluca
+
+Grupo: Invictus
+ID: 000096
+Pago: $7,372
+Ahorro: $732
+
+Grupo: Mariposas
+ID: 000136
+Pago: $8,816
+Ahorro: $882
+
+Grupo: Las bellas
+ID: 000097
+Pago: $3,874
+Ahorro: $391
+Sucursal: Ixtapaluca
+
+Grupo: Los mismos de siempre
+ID: 000090
+Pago: $4,561
+Ahorro: $303
+Sucursal: Ixtapaluca
+
+Grupo: Aceitunas de Coktail
+ID: 000003
+Pago: $11,400
+Ahorro: $540
+
+Grupo: CUPIDO
+ID: 000033
+Pago: $5,324
+Ahorro: $357
+
+Grupo: Hachi
+ID: 000022
+Pago: $1,500
+
+Grupo: La loma
+ID: 000149
+Pago: $4,104

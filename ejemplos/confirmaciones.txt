@@ -1,0 +1,37 @@
+[24/10/25, 10:28:42] Pruebas de pago: ‎Creaste el grupo "Pruebas de pago".
+[24/10/25, 10:28:42] Pruebas de pago: ‎Los mensajes y las llamadas están cifrados de extremo a extremo. Solo las personas en este chat pueden leerlos, escucharlos o compartirlos.
+[24/10/25, 10:28:52] Uzziel: Amor, ignora este mensaje bb
+[24/10/25, 10:28:58] Uzziel: Este grupo completamente
+[24/10/25, 10:29:06] Uzziel: Nomas es pa hacer pruebas de mi sistema
+[24/10/25, 10:51:52] Uzziel: Grupo BIENVENIDOS 
+ID 000094
+Pago 12921
+Ahorro 1293 
+Sucursal Ixtapaluca
+[24/10/25, 10:53:04] Uzziel: Grupo Margaritas  
+ID 000162
+Pago 8136
+Ahorro 584
+Sucursal Tultitlan
+[24/10/25, 10:56:05] Uzziel: Grupo Independencia 
+ID 000083
+Pago 3344.03 
+Ahorro 195.97 
+Sucursal Tultitlan
+[24/10/25, 11:00:12] Uzziel: Grupo Exitosas San Juan 
+ID 000025
+Pago 3876.03
+Ahorro 323.97
+Número de pago 9
+[24/10/25, 11:03:09] Uzziel: Grupo Palomas Mensajeras 
+ID 000093
+Pago 3876.03
+Ahorro 491.97
+Sucursal Tultitlan 
+Número de pago 5
+[24/10/25, 11:04:53] Uzziel: Grupo La Cruz 
+ID 000115
+Pago 4180 
+Ahorro 304.96
+Total 4485
+Número de pago 4
