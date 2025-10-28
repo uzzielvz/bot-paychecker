@@ -10,8 +10,9 @@ import os
 import sys
 import json
 import logging
+import time
 from datetime import datetime
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Generator
 import unicodedata
 
 try:
@@ -37,12 +38,13 @@ class PaymentManager:
         self.load_config()
         
     def load_config(self):
-        """Carga configuración desde config.json"""
+        """Carga configuración desde config.json, si no existe el json, se crea uno por defecto"""
         self.config = {
             "horarios": {
-                "matutino": "antes de 12:00",
-                "vespertino": "después de 12:00",
-                "archivo_procesado": None
+                "matutino": "< 13:00",
+                "vespertino": ">= 13:00",
+                "archivo_procesado": None,
+                "corte_actual": None
             },
             "mapeo_id_grupos": {}
         }
@@ -99,7 +101,21 @@ class PaymentManager:
         except ValueError:
             return 0.0
     
-    def extract_all_payments_from_lines(self, lines: List[str], filename: str) -> List[Dict]:
+    def get_current_corte(self) -> str:
+        """
+        Determina el corte horario actual basado en la hora del sistema
+        Matutino < 13:00, Vespertino >= 13:00
+        """
+        hora_actual = datetime.now().hour
+        corte = "Matutino" if hora_actual < 13 else "Vespertino"
+        
+        # Guardar en config
+        self.config["horarios"]["corte_actual"] = corte
+        self.save_config()
+        
+        return corte
+    
+    def extract_all_payments_from_lines(self, lines: List[str], filename: str, corte: str = None) -> List[Dict]:
         """Extrae todos los pagos de las líneas del archivo"""
         entries = []
         msg_pattern = r'\[(\d{2}/\d{2}/\d{2}), (\d{2}:\d{2}:\d{2})\] ([^:]+): (.+)'
@@ -129,7 +145,7 @@ class PaymentManager:
                 
                 # Extraer grupos de este mensaje
                 extracted = self.extract_payments_from_content(
-                    full_content, current_fecha, current_hora, filename
+                    full_content, current_fecha, current_hora, filename, corte
                 )
                 entries.extend(extracted)
                 
@@ -139,7 +155,7 @@ class PaymentManager:
         
         return entries
     
-    def extract_payments_from_content(self, content: str, fecha: str, hora: str, filename: str) -> List[Dict]:
+    def extract_payments_from_content(self, content: str, fecha: str, hora: str, filename: str, corte: str = None) -> List[Dict]:
         """Extrae uno o más pagos del contenido de un mensaje"""
         entries = []
         
@@ -147,17 +163,28 @@ class PaymentManager:
         if any(ignore in content for ignore in ['Creaste el grupo', 'cifrados de extremo a extremo']):
             return entries
         
-        # Filtrar solo mensajes con "Grupo" o "GRUPO"
-        if 'Grupo' not in content and 'GRUPO' not in content:
+        # Detectar tipo: Individual (Cliente) o Grupal (Grupo)
+        es_individual = bool(re.search(r'\bCliente\b', content, re.IGNORECASE))
+        es_grupal = bool(re.search(r'\bGrupo\b|\bGRUPO\b', content, re.IGNORECASE))
+        
+        # Si no hay ni Cliente ni Grupo, no procesar
+        if not es_individual and not es_grupal:
             return entries
         
-        # Buscar todos los grupos en el contenido
+        # Si es individual, usar extract_single_payment
+        if es_individual:
+            single_entry = self.extract_single_payment(content, fecha, hora, filename, corte)
+            if single_entry:
+                entries.append(single_entry)
+            return entries
+        
+        # Buscar todos los grupos en el contenido (solo para grupales)
         grupo_pattern = r'(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?:\s+0*\d{6})?\s+ID\s*:?\s*0*(\d{1,6})'
         grupo_matches = list(re.finditer(grupo_pattern, content, re.IGNORECASE))
         
         if not grupo_matches:
             # Intentar extraer un solo grupo
-            single_entry = self.extract_single_payment(content, fecha, hora, filename)
+            single_entry = self.extract_single_payment(content, fecha, hora, filename, corte)
             if single_entry:
                 entries.append(single_entry)
             return entries
@@ -192,18 +219,33 @@ class PaymentManager:
                 # Intentar obtener info normalizada del config
                 nombre_config, sucursal_config = self.get_group_info_from_config(payment_id)
                 
-                # Determinar corte (matutino/vespertino) según hora
-                hora_int = int(hora.split(':')[0]) if ':' in hora else 12
-                corte = "Matutino" if hora_int < 12 else "Vespertino"
+                # Usar corte horario actual o determinar desde hora
+                if corte is None:
+                    hora_int = int(hora.split(':')[0]) if ':' in hora else 12
+                    corte = "Matutino" if hora_int < 12 else "Vespertino"
+                
+                # Calcular Total
+                total_calculado = round(pago + ahorro, 2)
+                
+                # Buscar Total en el contenido para validación
+                total_match = re.search(r'Total\s*:?\s*\$?\s*([\d,\.]+)', content, re.IGNORECASE)
+                if total_match:
+                    total_dado = self.normalize_number(total_match.group(1))
+                    # Validar que Total = Pago + Ahorro (tolerancia 0.01)
+                    if abs(total_dado - total_calculado) > 0.01:
+                        logging.warning(f"Discrepancia en Total para ID {payment_id}: "
+                                      f"Calculado={total_calculado}, Dado={total_dado}, "
+                                      f"Diferencia={abs(total_dado - total_calculado)}")
                 
                 entry = {
+                    'Tipo': 'Gpo',  # Es grupal
                     'ID': payment_id,
                     'Grupo': nombre_config if nombre_config else grupo.upper(),
                     'Fecha': fecha,
                     'Hora': hora,
                     'Pago': round(pago, 2),
                     'Ahorro': round(ahorro, 2),
-                    'Total': round(pago + ahorro, 2),
+                    'Total': total_calculado,
                     'Número de Pago': num_pago,
                     'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
                     'Corte': corte,
@@ -218,53 +260,92 @@ class PaymentManager:
         
         return entries
     
-    def extract_single_payment(self, content: str, fecha: str, hora: str, filename: str) -> Optional[Dict]:
-        """Extrae un solo pago del contenido"""
-        # Buscar Grupo
-        grupo_match = re.search(r'(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*ID|\s*\d{6})', content)
-        if not grupo_match:
-            return None
-        grupo = grupo_match.group(1).strip()
+    def extract_single_payment(self, content: str, fecha: str, hora: str, filename: str, corte: str = None) -> Optional[Dict]:
+        """Extrae un solo pago del contenido (Individual o Grupal)"""
+        # Detectar tipo: Individual (Cliente) o Grupal (Grupo)
+        es_individual = bool(re.search(r'\bCliente\b', content, re.IGNORECASE))
+        es_grupal = bool(re.search(r'\bGrupo\b|\bGRUPO\b', content, re.IGNORECASE))
         
-        # Buscar ID
+        if not es_individual and not es_grupal:
+            return None
+        
+        # Buscar ID (requerido en ambos casos)
         id_match = re.search(r'ID\s*:?\s*0*(\d{1,6})', content)
         if not id_match:
             return None
         payment_id = id_match.group(1).zfill(6)
         
-        # Buscar Pago
+        # Buscar Pago (requerido en ambos casos)
         pago_match = re.search(r'Pago\s*:?\s*\$?\s*([\d,\.]+)', content)
         if not pago_match:
             return None
         pago = self.normalize_number(pago_match.group(1))
         
-        # Buscar Ahorro
-        ahorro_match = re.search(r'Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content)
-        ahorro = self.normalize_number(ahorro_match.group(1)) if ahorro_match else 0.0
-        
         # Buscar Sucursal
         sucursal_match = re.search(r'Sucursal\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:N[úu]mero|$))', content)
         sucursal = sucursal_match.group(1).strip() if sucursal_match else None
         
-        # Buscar Número de pago
-        num_match = re.search(r'(?:Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content, re.IGNORECASE)
-        num_pago = int(num_match.group(1)) if num_match else None
-        
         # Intentar obtener info normalizada del config
         nombre_config, sucursal_config = self.get_group_info_from_config(payment_id)
         
-        # Determinar corte (matutino/vespertino) según hora
-        hora_int = int(hora.split(':')[0]) if ':' in hora else 12
-        corte = "Matutino" if hora_int < 12 else "Vespertino"
+        # Usar corte horario actual o determinar desde hora
+        if corte is None:
+            hora_int = int(hora.split(':')[0]) if ':' in hora else 12
+            corte = "Matutino" if hora_int < 12 else "Vespertino"
+        
+        # Procesar según tipo
+        if es_individual:
+            # INDIVIDUAL: Buscar nombre del cliente
+            cliente_match = re.search(r'Cliente\s+([A-Za-zÀ-ÿ\s]+?)(?=\s+ID)', content, re.IGNORECASE)
+            if not cliente_match:
+                return None
+            cliente_nombre = cliente_match.group(1).strip()
+            
+            # Reglas para Individual
+            grupo = nombre_config if nombre_config else cliente_nombre.upper()
+            ahorro = 0.0
+            total_calculado = round(pago, 2)  # Total = Pago
+            num_pago = None  # Sin número de pago
+            tipo = 'Ind'
+        else:
+            # GRUPAL: Buscar Grupo
+            grupo_match = re.search(r'(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*ID|\s*\d{6})', content)
+            if not grupo_match:
+                return None
+            grupo = grupo_match.group(1).strip()
+            
+            # Buscar Ahorro (solo para grupales)
+            ahorro_match = re.search(r'Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content)
+            ahorro = self.normalize_number(ahorro_match.group(1)) if ahorro_match else 0.0
+            
+            # Buscar Número de pago (solo para grupales)
+            num_match = re.search(r'(?:Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content, re.IGNORECASE)
+            num_pago = int(num_match.group(1)) if num_match else None
+            
+            # Calcular Total para grupal
+            total_calculado = round(pago + ahorro, 2)
+            tipo = 'Gpo'
+        
+        # Buscar Total en el contenido para validación (solo grupal puede tenerlo)
+        if es_grupal:
+            total_match = re.search(r'Total\s*:?\s*\$?\s*([\d,\.]+)', content, re.IGNORECASE)
+            if total_match:
+                total_dado = self.normalize_number(total_match.group(1))
+                # Validar que Total = Pago + Ahorro (tolerancia 0.01)
+                if abs(total_dado - total_calculado) > 0.01:
+                    logging.warning(f"Discrepancia en Total para ID {payment_id}: "
+                                  f"Calculado={total_calculado}, Dado={total_dado}, "
+                                  f"Diferencia={abs(total_dado - total_calculado)}")
         
         return {
+            'Tipo': tipo,
             'ID': payment_id,
             'Grupo': nombre_config if nombre_config else grupo.upper(),
             'Fecha': fecha,
             'Hora': hora,
             'Pago': round(pago, 2),
             'Ahorro': round(ahorro, 2),
-            'Total': round(pago + ahorro, 2),
+            'Total': total_calculado,
             'Número de Pago': num_pago,
             'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
             'Corte': corte,
@@ -340,18 +421,24 @@ class PaymentManager:
                 logging.info(f"Archivo {filepath} ya procesado")
                 return [], 0, 1
         
+        # Obtener corte horario actual
+        corte_actual = self.get_current_corte()
+        
         try:
+            # Usar generador línea por línea en lugar de readlines
+            lines = []
             with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+                for line in f:
+                    lines.append(line.rstrip('\n\r'))
             
             filename = os.path.basename(filepath)
-            entries = self.extract_all_payments_from_lines(lines, filename)
+            entries = self.extract_all_payments_from_lines(lines, filename, corte_actual)
             
-            # Eliminar duplicados
+            # Eliminar duplicados usando ID + Grupo + Pago + Ahorro + timestamp
             seen = set()
             unique_entries = []
             for entry in entries:
-                key = f"{entry['ID']}_{entry['Grupo']}_{entry['Pago']}_{entry['Ahorro']}"
+                key = f"{entry['ID']}_{entry['Grupo']}_{entry['Pago']}_{entry['Ahorro']}_{entry['Fecha']} {entry['Hora']}"
                 if key not in seen:
                     seen.add(key)
                     unique_entries.append(entry)
@@ -365,12 +452,8 @@ class PaymentManager:
                 self.save_timestamp(last_ts)
                 logging.info(f"Procesados {len(entries)} pagos de {filepath}")
                 
-                # Guardar horario de procesamiento en config
-                hora_actual = datetime.now().hour
-                if hora_actual < 12:
-                    self.config["horarios"]["archivo_procesado"] = "matutino"
-                else:
-                    self.config["horarios"]["archivo_procesado"] = "vespertino"
+                # Guardar corte de procesamiento en config
+                self.config["horarios"]["archivo_procesado"] = corte_actual
                 self.save_config()
             
         except Exception as e:
@@ -388,14 +471,29 @@ class PaymentManager:
         try:
             logging.info(f"Creando DataFrame con {len(entries)} entradas")
             df_new = pd.DataFrame(entries)
-            # Filtrar columnas para eliminar 'Archivo' que no debe ir al Excel
-            cols = ['ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
-                   'Número de Pago', 'Sucursal', 'Corte', 'Confirmado']
-            # Asegurar que todas las columnas existan
-            for col in cols:
+            
+            # Orden EXACTO de columnas con 'Tipo' como primera columna
+            cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
+                         'Número de Pago', 'Sucursal', 'Corte', 'Confirmado']
+            
+            # Eliminar 'Archivo' que no debe ir al Excel
+            if 'Archivo' in df_new.columns:
+                df_new = df_new.drop(columns=['Archivo'])
+            
+            # Asegurar que todas las columnas existan (rellenar con valores por defecto si faltan)
+            for col in cols_orden:
                 if col not in df_new.columns:
-                    df_new[col] = None
-            df_new = df_new[cols]
+                    if col == 'Tipo':
+                        # Si no hay Tipo, inferir de otros campos
+                        df_new[col] = df_new.apply(
+                            lambda row: 'Gpo' if pd.notna(row.get('Ahorro', 0)) and float(row.get('Ahorro', 0)) > 0 
+                                       else 'Ind', axis=1
+                        )
+                    else:
+                        df_new[col] = None
+            
+            # Reordenar columnas al orden exacto especificado
+            df_new = df_new.reindex(columns=cols_orden)
             
             # Convertir ID a string y asegurar formato de 6 dígitos con ceros a la izquierda
             if 'ID' in df_new.columns:
@@ -406,12 +504,29 @@ class PaymentManager:
             if os.path.exists(self.excel_path):
                 try:
                     df_existing = pd.read_excel(self.excel_path, sheet_name='Pagos', engine='openpyxl')
+                    
                     # Convertir ID existente a string y rellenar con ceros a la izquierda
                     if 'ID' in df_existing.columns:
-                        # Primero convertir a string, luego limpiar .0 y rellenar con ceros
                         df_existing['ID'] = df_existing['ID'].astype(str).str.replace('.0', '', regex=False)
                         df_existing['ID'] = df_existing['ID'].str.zfill(6)
-                except:
+                    
+                    # Si Excel existente no tiene 'Tipo', agregarlo y rellenar
+                    if 'Tipo' not in df_existing.columns:
+                        # Inferir Tipo de campos existentes
+                        df_existing['Tipo'] = df_existing.apply(
+                            lambda row: 'Gpo' if pd.notna(row.get('Ahorro', 0)) and float(row.get('Ahorro', 0)) > 0 
+                                       else 'Ind', axis=1
+                        )
+                    
+                    # Asegurar todas las columnas del orden especificado
+                    for col in cols_orden:
+                        if col not in df_existing.columns:
+                            df_existing[col] = None
+                    
+                    # Reordenar columnas existentes al orden exacto
+                    df_existing = df_existing.reindex(columns=cols_orden)
+                except Exception as e:
+                    logging.warning(f"Error leyendo Excel existente: {e}")
                     df_existing = None
             
             if df_existing is not None and not df_existing.empty:
@@ -430,29 +545,40 @@ class PaymentManager:
                 df_meta = pd.DataFrame({'ultimo_timestamp': ['']})
                 df_meta.to_excel(writer, sheet_name='Meta', index=False)
             
-            # Configurar formato de Excel y ocultar Meta
-            try:
-                wb = openpyxl.load_workbook(self.excel_path)
-                
-                # Configurar columna ID como texto para preservar formato
-                if 'Pagos' in wb.sheetnames:
-                    ws = wb['Pagos']
-                    for cell in ws[1]:  # Primera fila (encabezados)
-                        if cell.value == 'ID':
-                            col_letter = cell.column_letter
-                            # Formatear todas las celdas de la columna ID como texto
-                            for row in range(2, ws.max_row + 1):
-                                ws[f'{col_letter}{row}'].number_format = '@'  # @ = texto
-                
-                # Ocultar hoja Meta
-                if 'Meta' in wb.sheetnames and len(wb.sheetnames) > 1:
-                    meta_idx = wb.sheetnames.index('Meta')
-                    wb.worksheets[meta_idx].sheet_state = 'hidden'
-                
-                wb.save(self.excel_path)
-                wb.close()
-            except Exception as meta_error:
-                logging.warning(f"No se pudo configurar formato del Excel: {meta_error}")
+            # Configurar formato de Excel y ocultar Meta con retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    wb = openpyxl.load_workbook(self.excel_path)
+                    
+                    # Configurar columna ID como texto para preservar formato
+                    if 'Pagos' in wb.sheetnames:
+                        ws = wb['Pagos']
+                        for cell in ws[1]:  # Primera fila (encabezados)
+                            if cell.value == 'ID':
+                                col_letter = cell.column_letter
+                                # Formatear todas las celdas de la columna ID como texto
+                                for row in range(2, ws.max_row + 1):
+                                    ws[f'{col_letter}{row}'].number_format = '@'  # @ = texto
+                    
+                    # Ocultar hoja Meta
+                    if 'Meta' in wb.sheetnames and len(wb.sheetnames) > 1:
+                        meta_idx = wb.sheetnames.index('Meta')
+                        wb.worksheets[meta_idx].sheet_state = 'hidden'
+                    
+                    wb.save(self.excel_path)
+                    wb.close()
+                    break
+                except PermissionError as pe:
+                    if attempt < max_retries - 1:
+                        logging.warning(f"Intento {attempt + 1} de {max_retries}: Permiso denegado. Esperando...")
+                        time.sleep(1)
+                    else:
+                        logging.error(f"NO se pudo guardar Excel tras {max_retries} intentos. Cierra el archivo en Excel.")
+                        raise
+                except Exception as meta_error:
+                    logging.warning(f"No se pudo configurar formato del Excel: {meta_error}")
+                    break
             
             logging.info(f"Guardado exitoso: {len(df_final)} registros")
             return len(df_final)
@@ -471,12 +597,17 @@ class PaymentManager:
         confirmed_entries = []
         
         # Procesar archivo de confirmaciones directamente (sin filtro de timestamp)
+        # Obtener corte horario actual para las confirmaciones
+        corte_actual = self.get_current_corte()
+        
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+                lines = []
+                for line in f:
+                    lines.append(line.rstrip('\n\r'))
             
             filename = os.path.basename(filepath)
-            entries = self.extract_all_payments_from_lines(lines, filename)
+            entries = self.extract_all_payments_from_lines(lines, filename, corte_actual)
             
             # Eliminar duplicados
             seen = set()
@@ -507,35 +638,59 @@ class PaymentManager:
             
             for conf_entry in entries:
                 match_found = False
-                logging.info(f"Buscando confirmación: ID={conf_entry['ID']}, Grupo={conf_entry['Grupo']}")
+                conf_tipo = conf_entry.get('Tipo', 'Gpo')  # Por defecto Gpo si no viene
+                logging.info(f"Buscando confirmación: Tipo={conf_tipo}, ID={conf_entry['ID']}, Grupo={conf_entry['Grupo']}, "
+                           f"Pago={conf_entry['Pago']}, Ahorro={conf_entry['Ahorro']}")
                 
-                # Buscar coincidencia en df_pagos
+                # Buscar coincidencia en df_pagos con Tipo + ID + Grupo + Pago + Ahorro
                 for idx in df_pagos.index:
                     row = df_pagos.iloc[idx]
+                    
+                    # Comparar Tipo
+                    excel_tipo = str(row.get('Tipo', 'Gpo')).strip() if pd.notna(row.get('Tipo')) else 'Gpo'
+                    if excel_tipo != conf_tipo:
+                        continue
+                    
                     # Convertir ID a string y rellenar con ceros para comparación
-                    excel_id = str(int(row['ID'])).zfill(6) if pd.notna(row['ID']) else ''
-                    conf_id = str(conf_entry['ID']).strip()
+                    excel_id = str(row['ID']).replace('.0', '').zfill(6) if pd.notna(row['ID']) else ''
+                    conf_id = str(conf_entry['ID']).strip().zfill(6)
                     
-                    # Debug: mostrar primeros IDs para comparar
-                    if idx < 3:
-                        logging.info(f"Excel ID={excel_id}, Conf ID={conf_id}")
-                    
-                    # Verificar match: Solo ID es suficiente (según requisitos)
+                    # Comparar ID
                     if excel_id != conf_id:
                         continue
                     
-                    logging.info(f"MATCH ENCONTRADO: ID={excel_id}")
+                    # Comparar Grupo (case-insensitive)
+                    excel_grupo = str(row['Grupo']).strip().upper() if pd.notna(row['Grupo']) else ''
+                    conf_grupo = str(conf_entry['Grupo']).strip().upper()
+                    if excel_grupo != conf_grupo:
+                        continue
                     
-                    # Match encontrado
+                    # Comparar Pago con tolerancia 0.01
+                    excel_pago = float(row['Pago']) if pd.notna(row['Pago']) else 0.0
+                    conf_pago = float(conf_entry['Pago'])
+                    if abs(excel_pago - conf_pago) > 0.01:
+                        logging.warning(f"Discrepancia en Pago para ID {conf_id}: "
+                                      f"Excel={excel_pago} vs Confirmación={conf_pago}")
+                        continue
+                    
+                    # Comparar Ahorro con tolerancia 0.01
+                    excel_ahorro = float(row['Ahorro']) if pd.notna(row['Ahorro']) else 0.0
+                    conf_ahorro = float(conf_entry['Ahorro'])
+                    if abs(excel_ahorro - conf_ahorro) > 0.01:
+                        logging.warning(f"Discrepancia en Ahorro para ID {conf_id}: "
+                                      f"Excel={excel_ahorro} vs Confirmación={conf_ahorro}")
+                    
+                    # Match completo encontrado
+                    logging.info(f"MATCH ENCONTRADO: Tipo={excel_tipo}, ID={conf_id}, Grupo={conf_grupo}")
                     match_found = True
                     
                     # Actualizar a "Sí" en columna Confirmado
                     df_pagos.at[idx, 'Confirmado'] = 'Sí'
                     
                     # Actualizar Ahorro si difiere
-                    if abs(float(row['Ahorro']) - conf_entry['Ahorro']) > 0.01:
-                        df_pagos.at[idx, 'Ahorro'] = conf_entry['Ahorro']
-                        df_pagos.at[idx, 'Total'] = row['Pago'] + conf_entry['Ahorro']
+                    if abs(excel_ahorro - conf_ahorro) > 0.01:
+                        df_pagos.at[idx, 'Ahorro'] = conf_ahorro
+                        df_pagos.at[idx, 'Total'] = excel_pago + conf_ahorro
                     
                     # Copiar registro completo para hoja de confirmados
                     confirmed_entry = df_pagos.iloc[idx].to_dict()
@@ -589,23 +744,32 @@ class PaymentManager:
         """
         errors = []
         
-        # Eliminar archivo Excel
-        try:
-            if os.path.exists(self.excel_path):
-                os.remove(self.excel_path)
-                logging.info(f"Eliminado archivo {self.excel_path}")
-        except PermissionError:
-            errors.append(f"NO se pudo eliminar {self.excel_path} (archivo abierto en Excel)")
-        except Exception as e:
-            errors.append(f"Error eliminando Excel: {e}")
+        # Eliminar archivo Excel con retries
+        if os.path.exists(self.excel_path):
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    os.remove(self.excel_path)
+                    logging.info(f"Eliminado archivo {self.excel_path}")
+                    break
+                except PermissionError as pe:
+                    if attempt < max_retries - 1:
+                        logging.warning(f"Intento {attempt + 1} de {max_retries}: Permiso denegado. Esperando...")
+                        time.sleep(1)
+                    else:
+                        errors.append(f"NO se pudo eliminar {self.excel_path} tras {max_retries} intentos (archivo abierto en Excel)")
+                except Exception as e:
+                    errors.append(f"Error eliminando Excel: {e}")
+                    break
         
         # Limpiar config.json
         try:
             self.config = {
                 "horarios": {
-                    "matutino": "antes de 12:00",
-                    "vespertino": "después de 12:00",
-                    "archivo_procesado": None
+                    "matutino": "< 13:00",
+                    "vespertino": ">= 13:00",
+                    "archivo_procesado": None,
+                    "corte_actual": None
                 },
                 "mapeo_id_grupos": {}
             }
