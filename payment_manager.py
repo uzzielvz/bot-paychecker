@@ -216,6 +216,19 @@ class PaymentManager:
                 num_match = re.search(r'(?:Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content[start_pos:], re.IGNORECASE)
                 num_pago = int(num_match.group(1)) if num_match else None
                 
+                # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2)
+                ciclo_match = re.search(r'Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
+                if not ciclo_match:
+                    logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: No encontrado")
+                    continue
+                
+                ciclo_num = int(ciclo_match.group(1))
+                if ciclo_num not in [1, 2]:
+                    logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: {ciclo_num}")
+                    continue
+                
+                ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
+                
                 # Intentar obtener info normalizada del config
                 nombre_config, sucursal_config = self.get_group_info_from_config(payment_id)
                 
@@ -249,6 +262,7 @@ class PaymentManager:
                     'Número de Pago': num_pago,
                     'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
                     'Corte': corte,
+                    'Ciclo': ciclo_formato,  # Formato "01" o "02"
                     'Confirmado': 'No',
                     'Archivo': filename
                 }
@@ -284,6 +298,19 @@ class PaymentManager:
         # Buscar Sucursal
         sucursal_match = re.search(r'Sucursal\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:N[úu]mero|$))', content)
         sucursal = sucursal_match.group(1).strip() if sucursal_match else None
+        
+        # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2)
+        ciclo_match = re.search(r'Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
+        if not ciclo_match:
+            logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: No encontrado")
+            return None
+        
+        ciclo_num = int(ciclo_match.group(1))
+        if ciclo_num not in [1, 2]:
+            logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: {ciclo_num}")
+            return None
+        
+        ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
         
         # Intentar obtener info normalizada del config
         nombre_config, sucursal_config = self.get_group_info_from_config(payment_id)
@@ -349,6 +376,7 @@ class PaymentManager:
             'Número de Pago': num_pago,
             'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
             'Corte': corte,
+            'Ciclo': ciclo_formato,  # Formato "01" o "02"
             'Confirmado': 'No',
             'Archivo': filename
         }
@@ -472,13 +500,42 @@ class PaymentManager:
             logging.info(f"Creando DataFrame con {len(entries)} entradas")
             df_new = pd.DataFrame(entries)
             
-            # Orden EXACTO de columnas con 'Tipo' como primera columna
+            # Orden EXACTO de columnas con 'Tipo' como primera columna y 'Ciclo' antes de 'Confirmado'
             cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
-                         'Número de Pago', 'Sucursal', 'Corte', 'Confirmado']
+                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Confirmado']
             
             # Eliminar 'Archivo' que no debe ir al Excel
             if 'Archivo' in df_new.columns:
                 df_new = df_new.drop(columns=['Archivo'])
+            
+            # Validar y filtrar entradas sin Ciclo válido
+            valid_entries = []
+            for idx, row in df_new.iterrows():
+                ciclo_val = row.get('Ciclo')
+                if pd.isna(ciclo_val) or str(ciclo_val).strip() == '':
+                    logging.warning(f"Entrada descartada: Ciclo faltante para ID {row.get('ID', 'N/A')}")
+                    continue
+                
+                # Validar que Ciclo sea "01" o "02"
+                ciclo_str = str(ciclo_val).strip()
+                if ciclo_str not in ['01', '02', '1', '2']:
+                    logging.warning(f"Entrada descartada: Ciclo inválido '{ciclo_str}' para ID {row.get('ID', 'N/A')}")
+                    continue
+                
+                # Normalizar a formato "01" o "02"
+                if ciclo_str == '1':
+                    ciclo_str = '01'
+                elif ciclo_str == '2':
+                    ciclo_str = '02'
+                
+                row['Ciclo'] = ciclo_str
+                valid_entries.append(row)
+            
+            if not valid_entries:
+                logging.warning("No hay entradas válidas después de validar Ciclo")
+                return 0
+            
+            df_new = pd.DataFrame(valid_entries)
             
             # Asegurar que todas las columnas existan (rellenar con valores por defecto si faltan)
             for col in cols_orden:
@@ -489,6 +546,10 @@ class PaymentManager:
                             lambda row: 'Gpo' if pd.notna(row.get('Ahorro', 0)) and float(row.get('Ahorro', 0)) > 0 
                                        else 'Ind', axis=1
                         )
+                    elif col == 'Ciclo':
+                        # Ciclo es obligatorio, no debería faltar pero por seguridad
+                        logging.warning("Columna Ciclo faltante en datos - esto no debería pasar")
+                        continue
                     else:
                         df_new[col] = None
             
@@ -518,10 +579,41 @@ class PaymentManager:
                                        else 'Ind', axis=1
                         )
                     
+                    # Si Excel existente no tiene 'Ciclo', agregarlo con valor por defecto "01"
+                    if 'Ciclo' not in df_existing.columns:
+                        df_existing['Ciclo'] = '01'
+                        logging.info("Columna 'Ciclo' agregada a Excel existente con valor por defecto '01'")
+                    
+                    # Validar y filtrar entradas existentes sin Ciclo válido
+                    valid_existing = []
+                    for idx, row in df_existing.iterrows():
+                        ciclo_val = row.get('Ciclo')
+                        if pd.isna(ciclo_val) or str(ciclo_val).strip() == '':
+                            # Si no tiene Ciclo, asignar "01" por defecto
+                            row['Ciclo'] = '01'
+                        else:
+                            ciclo_str = str(ciclo_val).strip()
+                            # Normalizar formato
+                            if ciclo_str == '1':
+                                ciclo_str = '01'
+                            elif ciclo_str == '2':
+                                ciclo_str = '02'
+                            elif ciclo_str not in ['01', '02']:
+                                # Ciclo inválido, asignar "01" por defecto
+                                logging.warning(f"Ciclo inválido '{ciclo_str}' en Excel para ID {row.get('ID', 'N/A')}, asignando '01'")
+                                ciclo_str = '01'
+                            row['Ciclo'] = ciclo_str
+                        valid_existing.append(row)
+                    
+                    df_existing = pd.DataFrame(valid_existing)
+                    
                     # Asegurar todas las columnas del orden especificado
                     for col in cols_orden:
                         if col not in df_existing.columns:
-                            df_existing[col] = None
+                            if col == 'Ciclo':
+                                df_existing[col] = '01'  # Valor por defecto
+                            else:
+                                df_existing[col] = None
                     
                     # Reordenar columnas existentes al orden exacto
                     df_existing = df_existing.reindex(columns=cols_orden)
@@ -551,13 +643,18 @@ class PaymentManager:
                 try:
                     wb = openpyxl.load_workbook(self.excel_path)
                     
-                    # Configurar columna ID como texto para preservar formato
+                    # Configurar columnas ID y Ciclo como texto para preservar formato
                     if 'Pagos' in wb.sheetnames:
                         ws = wb['Pagos']
                         for cell in ws[1]:  # Primera fila (encabezados)
                             if cell.value == 'ID':
                                 col_letter = cell.column_letter
                                 # Formatear todas las celdas de la columna ID como texto
+                                for row in range(2, ws.max_row + 1):
+                                    ws[f'{col_letter}{row}'].number_format = '@'  # @ = texto
+                            elif cell.value == 'Ciclo':
+                                col_letter = cell.column_letter
+                                # Formatear todas las celdas de la columna Ciclo como texto
                                 for row in range(2, ws.max_row + 1):
                                     ws[f'{col_letter}{row}'].number_format = '@'  # @ = texto
                     
