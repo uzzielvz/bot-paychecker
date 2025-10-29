@@ -229,6 +229,12 @@ class PaymentManager:
                 
                 ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
                 
+                # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
+                tipo_code = '2'  # Es grupal
+                id_str = payment_id.zfill(6)
+                ciclo_str = ciclo_formato.zfill(2)
+                deposito = tipo_code + id_str + ciclo_str
+                
                 # Intentar obtener info normalizada del config
                 nombre_config, sucursal_config = self.get_group_info_from_config(payment_id)
                 
@@ -263,6 +269,7 @@ class PaymentManager:
                     'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
                     'Corte': corte,
                     'Ciclo': ciclo_formato,  # Formato "01" o "02"
+                    'Depósito': deposito,  # Calculado: tipo(1) + ID(6) + Ciclo(2)
                     'Confirmado': 'No',
                     'Archivo': filename
                 }
@@ -312,6 +319,12 @@ class PaymentManager:
         
         ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
         
+        # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
+        # Se determinará el tipo_code según si es Ind o Gpo
+        # id_str ya está en formato de 6 dígitos (payment_id)
+        id_str = payment_id.zfill(6)
+        ciclo_str = ciclo_formato.zfill(2)
+        
         # Intentar obtener info normalizada del config
         nombre_config, sucursal_config = self.get_group_info_from_config(payment_id)
         
@@ -334,6 +347,7 @@ class PaymentManager:
             total_calculado = round(pago, 2)  # Total = Pago
             num_pago = None  # Sin número de pago
             tipo = 'Ind'
+            tipo_code = '1'  # Individual
         else:
             # GRUPAL: Buscar Grupo
             grupo_match = re.search(r'(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*ID|\s*\d{6})', content)
@@ -352,6 +366,10 @@ class PaymentManager:
             # Calcular Total para grupal
             total_calculado = round(pago + ahorro, 2)
             tipo = 'Gpo'
+            tipo_code = '2'  # Grupal
+        
+        # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
+        deposito = tipo_code + id_str + ciclo_str
         
         # Buscar Total en el contenido para validación (solo grupal puede tenerlo)
         if es_grupal:
@@ -377,6 +395,7 @@ class PaymentManager:
             'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
             'Corte': corte,
             'Ciclo': ciclo_formato,  # Formato "01" o "02"
+            'Depósito': deposito,  # Calculado: tipo_code(1) + ID(6) + Ciclo(2)
             'Confirmado': 'No',
             'Archivo': filename
         }
@@ -500,9 +519,9 @@ class PaymentManager:
             logging.info(f"Creando DataFrame con {len(entries)} entradas")
             df_new = pd.DataFrame(entries)
             
-            # Orden EXACTO de columnas con 'Tipo' como primera columna y 'Ciclo' antes de 'Confirmado'
+            # Orden EXACTO de columnas con 'Tipo' como primera columna, 'Ciclo' y 'Depósito' antes de 'Confirmado'
             cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
-                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Confirmado']
+                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Depósito', 'Confirmado']
             
             # Eliminar 'Archivo' que no debe ir al Excel
             if 'Archivo' in df_new.columns:
@@ -537,6 +556,16 @@ class PaymentManager:
             
             df_new = pd.DataFrame(valid_entries)
             
+            # Calcular columna 'Depósito' para entradas nuevas si no existe
+            if 'Depósito' not in df_new.columns:
+                df_new['Depósito'] = df_new.apply(
+                    lambda row: (
+                        ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                        str(row.get('ID', '')).zfill(6) +
+                        str(row.get('Ciclo', '01')).zfill(2)
+                    ), axis=1
+                )
+            
             # Asegurar que todas las columnas existan (rellenar con valores por defecto si faltan)
             for col in cols_orden:
                 if col not in df_new.columns:
@@ -550,6 +579,15 @@ class PaymentManager:
                         # Ciclo es obligatorio, no debería faltar pero por seguridad
                         logging.warning("Columna Ciclo faltante en datos - esto no debería pasar")
                         continue
+                    elif col == 'Depósito':
+                        # Calcular Depósito si falta
+                        df_new[col] = df_new.apply(
+                            lambda row: (
+                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                                str(row.get('ID', '')).zfill(6) +
+                                str(row.get('Ciclo', '01')).zfill(2)
+                            ), axis=1
+                        )
                     else:
                         df_new[col] = None
             
@@ -607,11 +645,40 @@ class PaymentManager:
                     
                     df_existing = pd.DataFrame(valid_existing)
                     
+                    # Calcular columna 'Depósito' para Excel existente si no existe
+                    if 'Depósito' not in df_existing.columns:
+                        df_existing['Depósito'] = df_existing.apply(
+                            lambda row: (
+                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                                str(row.get('ID', '')).zfill(6) +
+                                str(row.get('Ciclo', '01')).zfill(2)
+                            ), axis=1
+                        )
+                        logging.info("Columna 'Depósito' agregada a Excel existente y calculada para todas las filas")
+                    else:
+                        # Recalcular Depósito para asegurar formato correcto
+                        df_existing['Depósito'] = df_existing.apply(
+                            lambda row: (
+                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                                str(row.get('ID', '')).zfill(6) +
+                                str(row.get('Ciclo', '01')).zfill(2)
+                            ), axis=1
+                        )
+                    
                     # Asegurar todas las columnas del orden especificado
                     for col in cols_orden:
                         if col not in df_existing.columns:
                             if col == 'Ciclo':
                                 df_existing[col] = '01'  # Valor por defecto
+                            elif col == 'Depósito':
+                                # Calcular Depósito si falta
+                                df_existing[col] = df_existing.apply(
+                                    lambda row: (
+                                        ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                                        str(row.get('ID', '')).zfill(6) +
+                                        str(row.get('Ciclo', '01')).zfill(2)
+                                    ), axis=1
+                                )
                             else:
                                 df_existing[col] = None
                     
