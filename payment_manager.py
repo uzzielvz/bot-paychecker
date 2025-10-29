@@ -163,15 +163,22 @@ class PaymentManager:
         if any(ignore in content for ignore in ['Creaste el grupo', 'cifrados de extremo a extremo']):
             return entries
         
-        # Detectar tipo: Individual (Cliente) o Grupal (Grupo)
-        es_individual = bool(re.search(r'\bCliente\b', content, re.IGNORECASE))
+        # Detectar tipo: Individual (Cliente o formato ID+NOMBRE) o Grupal (Grupo)
+        es_individual_cliente = bool(re.search(r'\bCliente\b', content, re.IGNORECASE))
+        
+        # Detectar individuales sin "Cliente": formato "001395 ROMANO PALMA EDITH YADIRA"
+        # Regex busca ID al inicio o después de timestamp, seguido de nombre en mayúsculas
+        ind_match_sin_cliente = re.search(r'^\s*0*(\d{6})\s+([A-ZÁÉÍÓÚÑ\s]+?)(?:\s*\(|$)', content.strip(), re.MULTILINE)
+        es_individual_sin_cliente = ind_match_sin_cliente is not None
+        
+        es_individual = es_individual_cliente or es_individual_sin_cliente
         es_grupal = bool(re.search(r'\bGrupo\b|\bGRUPO\b', content, re.IGNORECASE))
         
-        # Si no hay ni Cliente ni Grupo, no procesar
+        # Si no hay ni Cliente, ni formato ID+NOMBRE, ni Grupo, no procesar
         if not es_individual and not es_grupal:
             return entries
         
-        # Si es individual, usar extract_single_payment
+        # Si es individual (con o sin Cliente), usar extract_single_payment
         if es_individual:
             single_entry = self.extract_single_payment(content, fecha, hora, filename, corte)
             if single_entry:
@@ -266,9 +273,10 @@ class PaymentManager:
                     'Ahorro': round(ahorro, 2),
                     'Total': total_calculado,
                     'Número de Pago': num_pago,
-                    'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
+                    'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Pendiente"),
                     'Corte': corte,
                     'Ciclo': ciclo_formato,  # Formato "01" o "02"
+                    'Concepto': "Pendiente de imagen",  # Default para grupales
                     'Depósito': deposito,  # Calculado: tipo(1) + ID(6) + Ciclo(2)
                     'Confirmado': 'No',
                     'Archivo': filename
@@ -283,41 +291,84 @@ class PaymentManager:
     
     def extract_single_payment(self, content: str, fecha: str, hora: str, filename: str, corte: str = None) -> Optional[Dict]:
         """Extrae un solo pago del contenido (Individual o Grupal)"""
-        # Detectar tipo: Individual (Cliente) o Grupal (Grupo)
-        es_individual = bool(re.search(r'\bCliente\b', content, re.IGNORECASE))
+        # Detectar tipo: Individual (Cliente o formato ID+NOMBRE) o Grupal (Grupo)
+        es_individual_cliente = bool(re.search(r'\bCliente\b', content, re.IGNORECASE))
+        
+        # Detectar individuales sin "Cliente": formato "001395 ROMANO PALMA EDITH YADIRA"
+        ind_match_sin_cliente = re.search(r'^\s*0*(\d{6})\s+([A-ZÁÉÍÓÚÑ\s]+?)(?:\s*\(|$)', content.strip(), re.MULTILINE)
+        es_individual_sin_cliente = ind_match_sin_cliente is not None
+        
+        es_individual = es_individual_cliente or es_individual_sin_cliente
         es_grupal = bool(re.search(r'\bGrupo\b|\bGRUPO\b', content, re.IGNORECASE))
         
         if not es_individual and not es_grupal:
             return None
         
-        # Buscar ID (requerido en ambos casos)
-        id_match = re.search(r'ID\s*:?\s*0*(\d{1,6})', content)
-        if not id_match:
-            return None
-        payment_id = id_match.group(1).zfill(6)
+        # Buscar ID según el formato
+        payment_id = None
+        nombre_ind_sin_cliente = None
+        concepto_ind_sin_cliente = None
         
-        # Buscar Pago (requerido en ambos casos)
+        if es_individual_sin_cliente:
+            # Formato: "001395 ROMANO PALMA EDITH YADIRA" o "001395 ROMANO PALMA EDITH YADIRA (NOTA)"
+            payment_id = ind_match_sin_cliente.group(1).zfill(6)
+            nombre_ind_sin_cliente = ind_match_sin_cliente.group(2).strip().upper()
+            
+            # Extraer Concepto si hay paréntesis
+            concepto_match = re.search(r'\(([^)]+)\)', content)
+            if concepto_match:
+                concepto_ind_sin_cliente = concepto_match.group(1).strip()
+            
+        # Si no se encontró con formato nuevo, buscar formato tradicional
+        if not payment_id:
+            id_match = re.search(r'ID\s*:?\s*0*(\d{1,6})', content)
+            if not id_match:
+                return None
+            payment_id = id_match.group(1).zfill(6)
+        
+        # Buscar Pago (OPCIONAL para individuales sin Cliente, requerido para otros)
         pago_match = re.search(r'Pago\s*:?\s*\$?\s*([\d,\.]+)', content)
-        if not pago_match:
-            return None
-        pago = self.normalize_number(pago_match.group(1))
+        if pago_match:
+            pago = self.normalize_number(pago_match.group(1))
+        else:
+            # Pago no encontrado - solo permitido para individuales sin Cliente
+            if es_individual_sin_cliente:
+                pago = 0.0
+                logging.info(f"ID {payment_id}: Pago no encontrado → 0.0 (pendiente de imagen)")
+            else:
+                return None  # Para otros formatos, Pago es obligatorio
         
         # Buscar Sucursal
         sucursal_match = re.search(r'Sucursal\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:N[úu]mero|$))', content)
         sucursal = sucursal_match.group(1).strip() if sucursal_match else None
+        # Default inteligente: si no hay sucursal, usar "Pendiente"
+        if not sucursal:
+            sucursal = "Pendiente"
         
-        # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2)
+        # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2, default "01" si falta)
         ciclo_match = re.search(r'Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
         if not ciclo_match:
-            logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: No encontrado")
-            return None
-        
-        ciclo_num = int(ciclo_match.group(1))
-        if ciclo_num not in [1, 2]:
-            logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: {ciclo_num}")
-            return None
-        
-        ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
+            # Default: usar "01" si no se encuentra (solo para individuales sin Cliente)
+            if es_individual_sin_cliente:
+                ciclo_num = 1
+                ciclo_formato = "01"
+                logging.info(f"ID {payment_id}: Ciclo no encontrado → usando default '01'")
+            else:
+                logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: No encontrado")
+                return None
+        else:
+            ciclo_num = int(ciclo_match.group(1))
+            if ciclo_num not in [1, 2]:
+                # Default: usar "01" si es inválido (solo para individuales sin Cliente)
+                if es_individual_sin_cliente:
+                    ciclo_num = 1
+                    ciclo_formato = "01"
+                    logging.warning(f"ID {payment_id}: Ciclo inválido {ciclo_match.group(1)} → usando default '01'")
+                else:
+                    logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: {ciclo_num}")
+                    return None
+            else:
+                ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
         
         # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
         # Se determinará el tipo_code según si es Ind o Gpo
@@ -335,15 +386,22 @@ class PaymentManager:
         
         # Procesar según tipo
         if es_individual:
-            # INDIVIDUAL: Buscar nombre del cliente
-            cliente_match = re.search(r'Cliente\s+([A-Za-zÀ-ÿ\s]+?)(?=\s+ID)', content, re.IGNORECASE)
-            if not cliente_match:
-                return None
-            cliente_nombre = cliente_match.group(1).strip()
+            # INDIVIDUAL: Determinar nombre según formato
+            if es_individual_sin_cliente:
+                # Formato: "001395 ROMANO PALMA EDITH YADIRA"
+                grupo = nombre_config if nombre_config else nombre_ind_sin_cliente
+                concepto = concepto_ind_sin_cliente if concepto_ind_sin_cliente else "Pendiente de imagen"
+            else:
+                # Formato tradicional: "Cliente NOMBRE ID..."
+                cliente_match = re.search(r'Cliente\s+([A-Za-zÀ-ÿ\s]+?)(?=\s+ID)', content, re.IGNORECASE)
+                if not cliente_match:
+                    return None
+                cliente_nombre = cliente_match.group(1).strip()
+                grupo = nombre_config if nombre_config else cliente_nombre.upper()
+                concepto = "Pendiente de imagen"  # Default para formato tradicional
             
             # Reglas para Individual
-            grupo = nombre_config if nombre_config else cliente_nombre.upper()
-            ahorro = 0.0
+            ahorro = 0.0  # Siempre 0.0 para Ind
             total_calculado = round(pago, 2)  # Total = Pago
             num_pago = None  # Sin número de pago
             tipo = 'Ind'
@@ -367,6 +425,7 @@ class PaymentManager:
             total_calculado = round(pago + ahorro, 2)
             tipo = 'Gpo'
             tipo_code = '2'  # Grupal
+            concepto = "Pendiente de imagen"  # Default para grupales
         
         # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
         deposito = tipo_code + id_str + ciclo_str
@@ -392,9 +451,10 @@ class PaymentManager:
             'Ahorro': round(ahorro, 2),
             'Total': total_calculado,
             'Número de Pago': num_pago,
-            'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Sin especificar"),
+            'Sucursal': sucursal_config if sucursal_config else (self.normalize_sucursal(sucursal) if sucursal else "Pendiente"),
             'Corte': corte,
             'Ciclo': ciclo_formato,  # Formato "01" o "02"
+            'Concepto': concepto,  # Extraído del texto o "Pendiente de imagen"
             'Depósito': deposito,  # Calculado: tipo_code(1) + ID(6) + Ciclo(2)
             'Confirmado': 'No',
             'Archivo': filename
@@ -519,9 +579,9 @@ class PaymentManager:
             logging.info(f"Creando DataFrame con {len(entries)} entradas")
             df_new = pd.DataFrame(entries)
             
-            # Orden EXACTO de columnas con 'Tipo' como primera columna, 'Ciclo' y 'Depósito' antes de 'Confirmado'
+            # Orden EXACTO de columnas con 'Tipo' como primera columna, 'Concepto' después de 'Ciclo', 'Depósito' antes de 'Confirmado'
             cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
-                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Depósito', 'Confirmado']
+                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Concepto', 'Depósito', 'Confirmado']
             
             # Eliminar 'Archivo' que no debe ir al Excel
             if 'Archivo' in df_new.columns:
@@ -556,6 +616,10 @@ class PaymentManager:
             
             df_new = pd.DataFrame(valid_entries)
             
+            # Asegurar columna 'Concepto' para entradas nuevas
+            if 'Concepto' not in df_new.columns:
+                df_new['Concepto'] = 'Pendiente de imagen'
+            
             # Calcular columna 'Depósito' para entradas nuevas si no existe
             if 'Depósito' not in df_new.columns:
                 df_new['Depósito'] = df_new.apply(
@@ -579,6 +643,9 @@ class PaymentManager:
                         # Ciclo es obligatorio, no debería faltar pero por seguridad
                         logging.warning("Columna Ciclo faltante en datos - esto no debería pasar")
                         continue
+                    elif col == 'Concepto':
+                        # Default: "Pendiente de imagen"
+                        df_new[col] = 'Pendiente de imagen'
                     elif col == 'Depósito':
                         # Calcular Depósito si falta
                         df_new[col] = df_new.apply(
@@ -645,31 +712,28 @@ class PaymentManager:
                     
                     df_existing = pd.DataFrame(valid_existing)
                     
-                    # Calcular columna 'Depósito' para Excel existente si no existe
-                    if 'Depósito' not in df_existing.columns:
-                        df_existing['Depósito'] = df_existing.apply(
-                            lambda row: (
-                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
-                                str(row.get('ID', '')).zfill(6) +
-                                str(row.get('Ciclo', '01')).zfill(2)
-                            ), axis=1
-                        )
-                        logging.info("Columna 'Depósito' agregada a Excel existente y calculada para todas las filas")
-                    else:
-                        # Recalcular Depósito para asegurar formato correcto
-                        df_existing['Depósito'] = df_existing.apply(
-                            lambda row: (
-                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
-                                str(row.get('ID', '')).zfill(6) +
-                                str(row.get('Ciclo', '01')).zfill(2)
-                            ), axis=1
-                        )
+                    # Si Excel existente no tiene 'Concepto', agregarlo con valor por defecto
+                    if 'Concepto' not in df_existing.columns:
+                        df_existing['Concepto'] = 'Pendiente de imagen'
+                        logging.info("Columna 'Concepto' agregada a Excel existente con valor por defecto 'Pendiente de imagen'")
+                    
+                    # Calcular columna 'Depósito' para Excel existente (siempre recalcular)
+                    df_existing['Depósito'] = df_existing.apply(
+                        lambda row: (
+                            ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                            str(row.get('ID', '')).zfill(6) +
+                            str(row.get('Ciclo', '01')).zfill(2)
+                        ), axis=1
+                    )
+                    logging.info("Columna 'Depósito' recalculada para Excel existente")
                     
                     # Asegurar todas las columnas del orden especificado
                     for col in cols_orden:
                         if col not in df_existing.columns:
                             if col == 'Ciclo':
                                 df_existing[col] = '01'  # Valor por defecto
+                            elif col == 'Concepto':
+                                df_existing[col] = 'Pendiente de imagen'
                             elif col == 'Depósito':
                                 # Calcular Depósito si falta
                                 df_existing[col] = df_existing.apply(
