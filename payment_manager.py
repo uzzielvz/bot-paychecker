@@ -36,6 +36,9 @@ class PaymentManager:
         self.config_path = "config.json"
         self.setup_logging()
         self.load_config()
+        # Diccionarios para lookup de pago semanal desde archivo de montos
+        self.monto_grupos = {}  # {cod_grupo_solidario: valor_AC}
+        self.monto_individuales = {}  # {codigo_acreditado: valor_AC}
         
     def load_config(self):
         """Carga configuración desde config.json, si no existe el json, se crea uno por defecto"""
@@ -73,6 +76,98 @@ class PaymentManager:
             grupo_info = self.config["mapeo_id_grupos"][payment_id]
             return grupo_info.get("nombre"), grupo_info.get("sucursal")
         return None, None
+    
+    def load_monto_file(self, monto_filepath: str) -> bool:
+        """
+        Carga archivo Excel de montos autorizados y crea diccionarios de lookup.
+        Para grupales: Columna C "Cod. grupo solidario" -> Columna AC "Parcialidad + Parcialidad comisión"
+        Para individuales: Columna A "Codigo acreditado" -> Columna AC "Parcialidad + Parcialidad comisión"
+        """
+        try:
+            if not os.path.exists(monto_filepath):
+                logging.error(f"Archivo de montos no encontrado: {monto_filepath}")
+                return False
+            
+            # Leer Excel
+            df = pd.read_excel(monto_filepath, engine='openpyxl')
+            
+            # Limpiar diccionarios anteriores
+            self.monto_grupos = {}
+            self.monto_individuales = {}
+            
+            # Obtener nombres de columnas (pueden tener caracteres especiales)
+            # Columna A: índice 0, Columna C: índice 2, Columna AC: índice 28
+            col_a_idx = 0  # "Codigo acreditado"
+            col_c_idx = 2  # "Cod. grupo solidario"
+            col_ac_idx = 28  # "Parcialidad + Parcialidad comisión"
+            
+            if len(df.columns) <= col_ac_idx:
+                logging.error(f"El archivo Excel no tiene suficientes columnas. Se esperaba al menos columna AC (índice 28)")
+                return False
+            
+            # Procesar cada fila
+            for idx, row in df.iterrows():
+                # Obtener valor de columna AC (Parcialidad + Parcialidad comisión)
+                valor_ac = row.iloc[col_ac_idx]
+                
+                # Si el valor es NaN, saltar esta fila
+                if pd.isna(valor_ac):
+                    continue
+                
+                # Convertir a string para almacenar (puede ser numérico)
+                valor_ac_str = str(valor_ac).strip() if not pd.isna(valor_ac) else None
+                if not valor_ac_str or valor_ac_str == 'nan':
+                    continue
+                
+                # Procesar grupales: Columna C "Cod. grupo solidario"
+                cod_grupo = row.iloc[col_c_idx]
+                if pd.notna(cod_grupo):
+                    # Convertir a string y normalizar (puede ser float, convertir a int primero si aplica)
+                    try:
+                        if isinstance(cod_grupo, float):
+                            # Si es float entero, convertir a int y luego a string
+                            if cod_grupo.is_integer():
+                                cod_grupo_str = str(int(cod_grupo)).zfill(6)
+                            else:
+                                cod_grupo_str = str(int(cod_grupo)).zfill(6)
+                        else:
+                            cod_grupo_str = str(cod_grupo).strip().zfill(6)
+                        
+                        # Solo agregar si no existe (primera coincidencia, ya que todas tienen mismo valor)
+                        if cod_grupo_str not in self.monto_grupos:
+                            self.monto_grupos[cod_grupo_str] = valor_ac_str
+                    except Exception as e:
+                        logging.warning(f"Error procesando código grupo en fila {idx}: {e}")
+                        continue
+                
+                # Procesar individuales: Columna A "Codigo acreditado"
+                cod_acreditado = row.iloc[col_a_idx]
+                if pd.notna(cod_acreditado):
+                    # Convertir a string y normalizar
+                    try:
+                        if isinstance(cod_acreditado, float):
+                            if cod_acreditado.is_integer():
+                                cod_acreditado_str = str(int(cod_acreditado)).zfill(6)
+                            else:
+                                cod_acreditado_str = str(int(cod_acreditado)).zfill(6)
+                        else:
+                            cod_acreditado_str = str(cod_acreditado).strip().zfill(6)
+                        
+                        # Solo agregar si no existe
+                        if cod_acreditado_str not in self.monto_individuales:
+                            self.monto_individuales[cod_acreditado_str] = valor_ac_str
+                    except Exception as e:
+                        logging.warning(f"Error procesando código acreditado en fila {idx}: {e}")
+                        continue
+            
+            logging.info(f"Archivo de montos cargado: {len(self.monto_grupos)} grupos, {len(self.monto_individuales)} individuales")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error cargando archivo de montos: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return False
         
     def setup_logging(self):
         """Configura el logging a archivo"""
@@ -82,6 +177,25 @@ class PaymentManager:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         
+    def get_pago_semanal(self, payment_id: str, tipo: str) -> str:
+        """
+        Obtiene el pago semanal desde los diccionarios de montos cargados.
+        tipo debe ser 'Gpo' o 'Ind'
+        """
+        # Normalizar payment_id a string con 6 dígitos
+        payment_id_normalized = str(payment_id).strip().zfill(6)
+        
+        if tipo == 'Gpo':
+            # Buscar en diccionario de grupos
+            if self.monto_grupos and payment_id_normalized in self.monto_grupos:
+                return str(self.monto_grupos[payment_id_normalized])
+        elif tipo == 'Ind':
+            # Buscar en diccionario de individuales
+            if self.monto_individuales and payment_id_normalized in self.monto_individuales:
+                return str(self.monto_individuales[payment_id_normalized])
+        
+        return "No encontrado"
+    
     def extract_full_name(self, content: str) -> Optional[str]:
         """
         Extrae el nombre completo del grupo o cliente sin truncar.
@@ -383,6 +497,7 @@ class PaymentManager:
                     'Concepto': "Pendiente de imagen",  # Default para grupales
                     'Depósito': deposito,  # Calculado: tipo(1) + ID(6) + Ciclo(2)
                     'Confirmado': 'No',
+                    'Pago semanal': self.get_pago_semanal(payment_id, 'Gpo'),
                     'Archivo': filename
                 }
                 
@@ -581,6 +696,7 @@ class PaymentManager:
             'Concepto': concepto,  # Extraído del texto o "Pendiente de imagen"
             'Depósito': deposito,  # Calculado: tipo_code(1) + ID(6) + Ciclo(2)
             'Confirmado': 'No',
+            'Pago semanal': self.get_pago_semanal(payment_id, tipo),
             'Archivo': filename
         }
     
@@ -706,9 +822,9 @@ class PaymentManager:
             logging.info(f"Creando DataFrame con {len(entries)} entradas")
             df_new = pd.DataFrame(entries)
             
-            # Orden EXACTO de columnas con 'Tipo' como primera columna, 'Concepto' después de 'Ciclo', 'Depósito' antes de 'Confirmado'
+            # Orden EXACTO de columnas con 'Tipo' como primera columna, 'Concepto' después de 'Ciclo', 'Depósito' antes de 'Confirmado', 'Pago semanal' al final
             cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
-                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Concepto', 'Depósito', 'Confirmado']
+                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Concepto', 'Depósito', 'Confirmado', 'Pago semanal']
             
             # Eliminar 'Archivo' que no debe ir al Excel
             if 'Archivo' in df_new.columns:
@@ -747,6 +863,26 @@ class PaymentManager:
             if 'Concepto' not in df_new.columns:
                 df_new['Concepto'] = 'Pendiente de imagen'
             
+            # Procesar columna 'Pago semanal' para nuevos registros
+            if 'Pago semanal' not in df_new.columns:
+                # Agregar columna aplicando lookup si hay diccionarios cargados
+                df_new['Pago semanal'] = df_new.apply(
+                    lambda row: self.get_pago_semanal(
+                        str(row.get('ID', '')).zfill(6),
+                        str(row.get('Tipo', 'Ind')).strip()
+                    ), axis=1
+                )
+            else:
+                # Si existe pero tiene valores vacíos, rellenar con lookup
+                mask = (df_new['Pago semanal'].isna()) | (df_new['Pago semanal'] == '') | (df_new['Pago semanal'] == 'No encontrado')
+                if mask.any():
+                    df_new.loc[mask, 'Pago semanal'] = df_new.loc[mask].apply(
+                        lambda row: self.get_pago_semanal(
+                            str(row.get('ID', '')).zfill(6),
+                            str(row.get('Tipo', 'Ind')).strip()
+                        ), axis=1
+                    )
+            
             # Calcular columna 'Depósito' para entradas nuevas si no existe
             if 'Depósito' not in df_new.columns:
                 df_new['Depósito'] = df_new.apply(
@@ -773,6 +909,14 @@ class PaymentManager:
                     elif col == 'Concepto':
                         # Default: "Pendiente de imagen"
                         df_new[col] = 'Pendiente de imagen'
+                    elif col == 'Pago semanal':
+                        # Calcular Pago semanal si falta
+                        df_new[col] = df_new.apply(
+                            lambda row: self.get_pago_semanal(
+                                str(row.get('ID', '')).zfill(6),
+                                str(row.get('Tipo', 'Ind')).strip()
+                            ), axis=1
+                        )
                     elif col == 'Depósito':
                         # Calcular Depósito si falta
                         df_new[col] = df_new.apply(
@@ -796,12 +940,37 @@ class PaymentManager:
             df_existing = None
             if os.path.exists(self.excel_path):
                 try:
-                    df_existing = pd.read_excel(self.excel_path, sheet_name='Pagos', engine='openpyxl')
+                    # Leer con dtype=str para columnas críticas para preservar ceros a la izquierda
+                    df_existing = pd.read_excel(
+                        self.excel_path, 
+                        sheet_name='Pagos', 
+                        engine='openpyxl',
+                        dtype={'ID': str, 'Ciclo': str, 'Depósito': str}
+                    )
                     
-                    # Convertir ID existente a string y rellenar con ceros a la izquierda
+                    # Normalizar ID (ya es string por dtype, solo limpiar y formatear)
                     if 'ID' in df_existing.columns:
-                        df_existing['ID'] = df_existing['ID'].astype(str).str.replace('.0', '', regex=False)
+                        df_existing['ID'] = df_existing['ID'].astype(str).str.replace('.0', '', regex=False).str.replace('nan', '').str.replace('None', '')
                         df_existing['ID'] = df_existing['ID'].str.zfill(6)
+                    
+                    # Normalizar Depósito (ya es string por dtype, solo asegurar formato completo)
+                    if 'Depósito' in df_existing.columns:
+                        df_existing['Depósito'] = df_existing['Depósito'].astype(str).str.replace('.0', '', regex=False).str.replace('nan', '').str.replace('None', '')
+                        # Asegurar formato completo de 9 dígitos (tipo(1) + ID(6) + Ciclo(2))
+                        def fix_deposito_format(val):
+                            if pd.isna(val) or val == '' or val == 'nan' or val == 'None':
+                                return None
+                            val_str = str(val).strip()
+                            # Si es numérico y tiene menos de 9 dígitos, rellenar con ceros
+                            if val_str.replace('.', '').isdigit():
+                                # Quitar punto decimal si existe
+                                val_str = val_str.split('.')[0]
+                                # Rellenar a 9 dígitos si es necesario
+                                if len(val_str) < 9:
+                                    val_str = val_str.zfill(9)
+                            return val_str
+                        
+                        df_existing['Depósito'] = df_existing['Depósito'].apply(fix_deposito_format)
                     
                     # Si Excel existente no tiene 'Tipo', agregarlo y rellenar
                     if 'Tipo' not in df_existing.columns:
@@ -854,6 +1023,28 @@ class PaymentManager:
                     )
                     logging.info("Columna 'Depósito' recalculada para Excel existente")
                     
+                    # Procesar columna 'Pago semanal' para Excel existente
+                    if 'Pago semanal' not in df_existing.columns:
+                        # Agregar columna aplicando lookup si hay diccionarios cargados
+                        df_existing['Pago semanal'] = df_existing.apply(
+                            lambda row: self.get_pago_semanal(
+                                str(row.get('ID', '')).zfill(6),
+                                str(row.get('Tipo', 'Ind')).strip()
+                            ), axis=1
+                        )
+                        logging.info("Columna 'Pago semanal' agregada a Excel existente")
+                    else:
+                        # Actualizar valores faltantes o "No encontrado" si hay nuevos datos cargados
+                        mask = (df_existing['Pago semanal'].isna()) | (df_existing['Pago semanal'] == '') | (df_existing['Pago semanal'] == 'No encontrado')
+                        if mask.any():
+                            df_existing.loc[mask, 'Pago semanal'] = df_existing.loc[mask].apply(
+                                lambda row: self.get_pago_semanal(
+                                    str(row.get('ID', '')).zfill(6),
+                                    str(row.get('Tipo', 'Ind')).strip()
+                                ), axis=1
+                            )
+                            logging.info(f"Columna 'Pago semanal' actualizada para {mask.sum()} registros existentes")
+                    
                     # Asegurar todas las columnas del orden especificado
                     for col in cols_orden:
                         if col not in df_existing.columns:
@@ -888,6 +1079,10 @@ class PaymentManager:
             
             logging.info(f"Guardando {len(df_final)} registros en {self.excel_path}")
             
+            # Asegurar que Depósito sea string para preservar ceros a la izquierda
+            if 'Depósito' in df_final.columns:
+                df_final['Depósito'] = df_final['Depósito'].astype(str)
+            
             # Crear ExcelWriter y agregar ambas hojas
             with pd.ExcelWriter(self.excel_path, engine='openpyxl') as writer:
                 df_final.to_excel(writer, sheet_name='Pagos', index=False)
@@ -901,7 +1096,7 @@ class PaymentManager:
                 try:
                     wb = openpyxl.load_workbook(self.excel_path)
                     
-                    # Configurar columnas ID y Ciclo como texto para preservar formato
+                    # Configurar columnas ID, Ciclo y Depósito como texto para preservar formato (ceros a la izquierda)
                     if 'Pagos' in wb.sheetnames:
                         ws = wb['Pagos']
                         for cell in ws[1]:  # Primera fila (encabezados)
@@ -915,6 +1110,23 @@ class PaymentManager:
                                 # Formatear todas las celdas de la columna Ciclo como texto
                                 for row in range(2, ws.max_row + 1):
                                     ws[f'{col_letter}{row}'].number_format = '@'  # @ = texto
+                            elif cell.value == 'Depósito':
+                                col_letter = cell.column_letter
+                                # Formatear todas las celdas de la columna Depósito como texto
+                                for row in range(2, ws.max_row + 1):
+                                    cell_ref = ws[f'{col_letter}{row}']
+                                    cell_ref.number_format = '@'  # @ = texto
+                                    # Asegurar que el valor se guarde como string (preserva ceros a la izquierda)
+                                    if cell_ref.value is not None:
+                                        # Convertir a string, preservando formato completo con ceros
+                                        dep_value = str(cell_ref.value)
+                                        # Si el valor es numérico y empieza con 0, preservarlo
+                                        if dep_value.isdigit() and len(dep_value) == 9:
+                                            # Ya tiene formato correcto (9 dígitos: tipo(1) + ID(6) + Ciclo(2))
+                                            cell_ref.value = dep_value
+                                        else:
+                                            # Normalizar a string asegurando formato completo
+                                            cell_ref.value = str(cell_ref.value).zfill(9) if len(str(cell_ref.value)) < 9 else str(cell_ref.value)
                     
                     # Ocultar hoja Meta
                     if 'Meta' in wb.sheetnames and len(wb.sheetnames) > 1:
@@ -988,8 +1200,28 @@ class PaymentManager:
             return [], alerts
         
         try:
-            # Leer hoja de Pagos
-            df_pagos = pd.read_excel(self.excel_path, sheet_name='Pagos', engine='openpyxl')
+            # Leer hoja de Pagos con dtype=str para preservar ceros a la izquierda
+            df_pagos = pd.read_excel(
+                self.excel_path, 
+                sheet_name='Pagos', 
+                engine='openpyxl',
+                dtype={'ID': str, 'Ciclo': str, 'Depósito': str}
+            )
+            
+            # Normalizar Depósito (ya es string, solo asegurar formato)
+            if 'Depósito' in df_pagos.columns:
+                df_pagos['Depósito'] = df_pagos['Depósito'].astype(str).str.replace('.0', '', regex=False).str.replace('nan', '').str.replace('None', '')
+                # Asegurar formato completo de 9 dígitos
+                def fix_deposito(val):
+                    if pd.isna(val) or val == '' or val == 'nan' or val == 'None':
+                        return None
+                    val_str = str(val).strip()
+                    if val_str.replace('.', '').isdigit():
+                        val_str = val_str.split('.')[0]
+                        if len(val_str) < 9:
+                            val_str = val_str.zfill(9)
+                    return val_str
+                df_pagos['Depósito'] = df_pagos['Depósito'].apply(fix_deposito)
             
             for conf_entry in entries:
                 match_found = False
@@ -1059,9 +1291,38 @@ class PaymentManager:
                         f"Pago {conf_entry['Pago']}, Ahorro {conf_entry['Ahorro']}"
                     )
             
+            # Asegurar que Depósito sea string antes de guardar
+            if 'Depósito' in df_pagos.columns:
+                df_pagos['Depósito'] = df_pagos['Depósito'].astype(str).str.replace('.0', '', regex=False)
+            
             # Guardar cambios en hoja Pagos
             with pd.ExcelWriter(self.excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
                 df_pagos.to_excel(writer, sheet_name='Pagos', index=False)
+            
+            # Configurar formato de Depósito como texto en Excel
+            wb = openpyxl.load_workbook(self.excel_path)
+            if 'Pagos' in wb.sheetnames:
+                ws = wb['Pagos']
+                for cell in ws[1]:  # Primera fila (encabezados)
+                    if cell.value == 'Depósito':
+                        col_letter = cell.column_letter
+                        # Formatear todas las celdas de la columna Depósito como texto
+                        for row in range(2, ws.max_row + 1):
+                            cell_ref = ws[f'{col_letter}{row}']
+                            cell_ref.number_format = '@'  # @ = texto
+                            # Asegurar que el valor se guarde como string
+                            if cell_ref.value is not None:
+                                dep_value = str(cell_ref.value)
+                                # Preservar formato completo (9 dígitos)
+                                if dep_value.replace('.', '').isdigit():
+                                    dep_value = dep_value.split('.')[0]
+                                    if len(dep_value) < 9:
+                                        dep_value = dep_value.zfill(9)
+                                    cell_ref.value = dep_value
+                                else:
+                                    cell_ref.value = dep_value
+            wb.save(self.excel_path)
+            wb.close()
             
             # Actualizar hoja Pagos Confirmados
             if confirmed_entries:
