@@ -23,6 +23,7 @@ except ImportError:
 
 try:
     import openpyxl
+    from openpyxl.styles import PatternFill
 except ImportError:
     print("Error: openpyxl no está instalado. Ejecuta: pip install openpyxl")
     sys.exit(1)
@@ -823,8 +824,8 @@ class PaymentManager:
             df_new = pd.DataFrame(entries)
             
             # Orden EXACTO de columnas con 'Tipo' como primera columna, 'Concepto' después de 'Ciclo', 'Depósito' antes de 'Confirmado', 'Pago semanal' al final
-            cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
-                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Concepto', 'Depósito', 'Confirmado', 'Pago semanal']
+            cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 'Monto Banco',
+                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Concepto', 'Depósito', 'Confirmado', 'Pago semanal', 'Pago real', 'Ahorro real']
             
             # Eliminar 'Archivo' que no debe ir al Excel
             if 'Archivo' in df_new.columns:
@@ -892,6 +893,53 @@ class PaymentManager:
                         str(row.get('Ciclo', '01')).zfill(2)
                     ), axis=1
                 )
+            
+            # Calcular columna 'Monto Banco' (por ahora igual a Total)
+            if 'Monto Banco' not in df_new.columns:
+                df_new['Monto Banco'] = df_new['Total'].copy()
+            
+            # Calcular columna 'Pago real'
+            if 'Pago real' not in df_new.columns:
+                def calcular_pago_real(row):
+                    pago_semanal = row.get('Pago semanal', None)
+                    monto_banco = row.get('Monto Banco', 0)
+                    
+                    # Si Pago semanal es "No encontrado" o NaN, dejar en blanco
+                    if pd.isna(pago_semanal) or pago_semanal == '' or pago_semanal == 'No encontrado':
+                        return None
+                    
+                    try:
+                        pago_semanal_num = float(pago_semanal)
+                        monto_banco_num = float(monto_banco) if pd.notna(monto_banco) else 0
+                        
+                        if monto_banco_num >= pago_semanal_num:
+                            return round(pago_semanal_num, 2)
+                        else:
+                            return round(monto_banco_num, 2)
+                    except (ValueError, TypeError):
+                        return None
+                
+                df_new['Pago real'] = df_new.apply(calcular_pago_real, axis=1)
+            
+            # Calcular columna 'Ahorro real'
+            if 'Ahorro real' not in df_new.columns:
+                def calcular_ahorro_real(row):
+                    pago_semanal = row.get('Pago semanal', None)
+                    monto_banco = row.get('Monto Banco', 0)
+                    
+                    # Si Pago semanal es "No encontrado" o NaN, dejar en blanco
+                    if pd.isna(pago_semanal) or pago_semanal == '' or pago_semanal == 'No encontrado':
+                        return None
+                    
+                    try:
+                        pago_semanal_num = float(pago_semanal)
+                        monto_banco_num = float(monto_banco) if pd.notna(monto_banco) else 0
+                        
+                        return round(monto_banco_num - pago_semanal_num, 2)
+                    except (ValueError, TypeError):
+                        return None
+                
+                df_new['Ahorro real'] = df_new.apply(calcular_ahorro_real, axis=1)
             
             # Asegurar que todas las columnas existan (rellenar con valores por defecto si faltan)
             for col in cols_orden:
@@ -1045,6 +1093,96 @@ class PaymentManager:
                             )
                             logging.info(f"Columna 'Pago semanal' actualizada para {mask.sum()} registros existentes")
                     
+                    # Calcular columna 'Monto Banco' para Excel existente (por ahora igual a Total)
+                    if 'Monto Banco' not in df_existing.columns:
+                        if 'Total' in df_existing.columns:
+                            df_existing['Monto Banco'] = df_existing['Total'].copy()
+                            logging.info("Columna 'Monto Banco' agregada a Excel existente (igual a Total)")
+                    
+                    # Calcular columna 'Pago real' para Excel existente
+                    if 'Pago real' not in df_existing.columns:
+                        def calcular_pago_real_existing(row):
+                            pago_semanal = row.get('Pago semanal', None)
+                            monto_banco = row.get('Monto Banco', 0)
+                            
+                            # Si Pago semanal es "No encontrado" o NaN, dejar en blanco
+                            if pd.isna(pago_semanal) or pago_semanal == '' or pago_semanal == 'No encontrado':
+                                return None
+                            
+                            try:
+                                pago_semanal_num = float(pago_semanal)
+                                monto_banco_num = float(monto_banco) if pd.notna(monto_banco) else 0
+                                
+                                if monto_banco_num >= pago_semanal_num:
+                                    return round(pago_semanal_num, 2)
+                                else:
+                                    return round(monto_banco_num, 2)
+                            except (ValueError, TypeError):
+                                return None
+                        
+                        df_existing['Pago real'] = df_existing.apply(calcular_pago_real_existing, axis=1)
+                        logging.info("Columna 'Pago real' agregada a Excel existente")
+                    else:
+                        # Recalcular para todos los registros
+                        def calcular_pago_real_existing(row):
+                            pago_semanal = row.get('Pago semanal', None)
+                            monto_banco = row.get('Monto Banco', 0)
+                            
+                            if pd.isna(pago_semanal) or pago_semanal == '' or pago_semanal == 'No encontrado':
+                                return None
+                            
+                            try:
+                                pago_semanal_num = float(pago_semanal)
+                                monto_banco_num = float(monto_banco) if pd.notna(monto_banco) else 0
+                                
+                                if monto_banco_num >= pago_semanal_num:
+                                    return round(pago_semanal_num, 2)
+                                else:
+                                    return round(monto_banco_num, 2)
+                            except (ValueError, TypeError):
+                                return None
+                        
+                        df_existing['Pago real'] = df_existing.apply(calcular_pago_real_existing, axis=1)
+                    
+                    # Calcular columna 'Ahorro real' para Excel existente
+                    if 'Ahorro real' not in df_existing.columns:
+                        def calcular_ahorro_real_existing(row):
+                            pago_semanal = row.get('Pago semanal', None)
+                            monto_banco = row.get('Monto Banco', 0)
+                            
+                            # Si Pago semanal es "No encontrado" o NaN, dejar en blanco
+                            if pd.isna(pago_semanal) or pago_semanal == '' or pago_semanal == 'No encontrado':
+                                return None
+                            
+                            try:
+                                pago_semanal_num = float(pago_semanal)
+                                monto_banco_num = float(monto_banco) if pd.notna(monto_banco) else 0
+                                
+                                return round(monto_banco_num - pago_semanal_num, 2)
+                            except (ValueError, TypeError):
+                                return None
+                        
+                        df_existing['Ahorro real'] = df_existing.apply(calcular_ahorro_real_existing, axis=1)
+                        logging.info("Columna 'Ahorro real' agregada a Excel existente")
+                    else:
+                        # Recalcular para todos los registros
+                        def calcular_ahorro_real_existing(row):
+                            pago_semanal = row.get('Pago semanal', None)
+                            monto_banco = row.get('Monto Banco', 0)
+                            
+                            if pd.isna(pago_semanal) or pago_semanal == '' or pago_semanal == 'No encontrado':
+                                return None
+                            
+                            try:
+                                pago_semanal_num = float(pago_semanal)
+                                monto_banco_num = float(monto_banco) if pd.notna(monto_banco) else 0
+                                
+                                return round(monto_banco_num - pago_semanal_num, 2)
+                            except (ValueError, TypeError):
+                                return None
+                        
+                        df_existing['Ahorro real'] = df_existing.apply(calcular_ahorro_real_existing, axis=1)
+                    
                     # Asegurar todas las columnas del orden especificado
                     for col in cols_orden:
                         if col not in df_existing.columns:
@@ -1127,6 +1265,65 @@ class PaymentManager:
                                         else:
                                             # Normalizar a string asegurando formato completo
                                             cell_ref.value = str(cell_ref.value).zfill(9) if len(str(cell_ref.value)) < 9 else str(cell_ref.value)
+                            
+                            # Formatear columnas numéricas: Monto Banco, Pago real, Ahorro real
+                            elif cell.value == 'Monto Banco':
+                                col_letter = cell.column_letter
+                                # Formato numérico con 2 decimales
+                                for row in range(2, ws.max_row + 1):
+                                    ws[f'{col_letter}{row}'].number_format = '#,##0.00'
+                            
+                            elif cell.value == 'Pago real':
+                                col_letter = cell.column_letter
+                                
+                                # Color verde para suficiente pago, rojo para insuficiente
+                                fill_verde = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+                                fill_rojo = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+                                
+                                # Obtener índices de columnas para comparación
+                                monto_banco_col = None
+                                pago_semanal_col = None
+                                for header_cell in ws[1]:
+                                    if header_cell.value == 'Monto Banco':
+                                        monto_banco_col = header_cell.column
+                                    elif header_cell.value == 'Pago semanal':
+                                        pago_semanal_col = header_cell.column
+                                
+                                # Aplicar formato y color a cada celda
+                                for row in range(2, ws.max_row + 1):
+                                    cell_ref = ws[f'{col_letter}{row}']
+                                    cell_ref.number_format = '#,##0.00'
+                                    
+                                    # Solo aplicar color si la celda tiene valor
+                                    if cell_ref.value is not None:
+                                        try:
+                                            pago_real_val = float(cell_ref.value)
+                                            
+                                            # Obtener valores de Monto Banco y Pago semanal para comparar
+                                            if monto_banco_col and pago_semanal_col:
+                                                monto_banco_cell = ws.cell(row=row, column=monto_banco_col)
+                                                pago_semanal_cell = ws.cell(row=row, column=pago_semanal_col)
+                                                
+                                                if monto_banco_cell.value is not None and pago_semanal_cell.value is not None:
+                                                    try:
+                                                        monto_banco_val = float(monto_banco_cell.value)
+                                                        pago_semanal_val = float(pago_semanal_cell.value)
+                                                        
+                                                        # Comparar y aplicar color
+                                                        if monto_banco_val >= pago_semanal_val:
+                                                            cell_ref.fill = fill_verde
+                                                        else:
+                                                            cell_ref.fill = fill_rojo
+                                                    except (ValueError, TypeError):
+                                                        pass
+                                        except (ValueError, TypeError):
+                                            pass
+                            
+                            elif cell.value == 'Ahorro real':
+                                col_letter = cell.column_letter
+                                # Formato numérico con 2 decimales
+                                for row in range(2, ws.max_row + 1):
+                                    ws[f'{col_letter}{row}'].number_format = '#,##0.00'
                     
                     # Ocultar hoja Meta
                     if 'Meta' in wb.sheetnames and len(wb.sheetnames) > 1:
