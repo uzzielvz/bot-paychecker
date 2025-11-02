@@ -46,8 +46,11 @@ class PaymentGUI:
         self.setup_header()
         self.setup_payment_zone()
         self.setup_confirmation_zone()
+        self.setup_monto_zone()
         self.setup_logs()
         self.setup_buttons()
+        # Verificar estado inicial de zona de montos
+        self.update_monto_zone_state()
         
     def setup_styles(self):
         """Configura los estilos de los widgets"""
@@ -177,6 +180,75 @@ class PaymentGUI:
                         style='Info.TLabel')
         info.pack(pady=10)
         
+    def setup_monto_zone(self):
+        """Configura la zona de carga de Excel de montos"""
+        container = tk.Frame(self.root, bg=self.colors['bg_primary'])
+        container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        frame = tk.Frame(container, bg=self.colors['bg_secondary'], 
+                        relief=tk.RAISED, bd=2)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        title = ttk.Label(frame, text="Subir Excel de Montos", style='Zone.TLabel')
+        title.pack(pady=15)
+        
+        zone = tk.Frame(frame, bg=self.colors['bg_secondary'], 
+                       relief=tk.SUNKEN, bd=1, width=400, height=200)
+        zone.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        zone_label = tk.Label(zone, 
+                             text="Primero genera Pagos.xlsx\nprocesando pagos",
+                             bg=self.colors['bg_secondary'],
+                             fg=self.colors['text_secondary'],
+                             font=('Segoe UI', 10),
+                             justify=tk.CENTER)
+        zone_label.pack(expand=True)
+        
+        self.monto_zone = zone
+        self.monto_label = zone_label
+        
+        self.monto_zone.bind("<Button-1>", lambda e: self.select_monto_file())
+        self.monto_label.bind("<Button-1>", lambda e: self.select_monto_file())
+        
+        if DND_AVAILABLE:
+            try:
+                zone.drop_target_register(DND_FILES)
+                zone.dnd_bind('<<Drop>>', self.on_drop_monto)
+            except:
+                pass
+        
+        info = ttk.Label(frame, 
+                        text="Formato soportado: .xlsx\n"
+                            "Archivo de montos autorizados",
+                        style='Info.TLabel')
+        info.pack(pady=10)
+        
+    def check_pagos_excel_exists(self) -> bool:
+        """Verifica si existe el archivo Excel de pagos"""
+        return os.path.exists(self.manager.excel_path)
+    
+    def update_monto_zone_state(self):
+        """Habilita o deshabilita la zona de montos según exista Pagos.xlsx"""
+        if self.check_pagos_excel_exists():
+            # Habilitar zona - cambiar texto y color
+            self.monto_label.config(
+                text="Arrastra archivo Excel aquí\n\n"
+                     "o haz clic para seleccionar archivo",
+                fg=self.colors['text_primary']
+            )
+            # Habilitar eventos de click
+            self.monto_zone.bind("<Button-1>", lambda e: self.select_monto_file())
+            self.monto_label.bind("<Button-1>", lambda e: self.select_monto_file())
+        else:
+            # Deshabilitar zona - cambiar texto y color
+            self.monto_label.config(
+                text="Primero genera Pagos.xlsx\nprocesando pagos",
+                fg=self.colors['text_secondary']
+            )
+            # Deshabilitar eventos de click
+            self.monto_zone.unbind("<Button-1>")
+            self.monto_label.unbind("<Button-1>")
+        
     def setup_logs(self):
         """Configura el área de logs"""
         container = tk.Frame(self.root, bg=self.colors['bg_primary'])
@@ -244,6 +316,22 @@ class PaymentGUI:
         )
         if files:
             self.process_confirmations(files)
+    
+    def select_monto_file(self):
+        """Abre diálogo para seleccionar archivo Excel de montos"""
+        if not self.check_pagos_excel_exists():
+            messagebox.showwarning(
+                "Excel No Existe",
+                "Primero debes generar el archivo Pagos.xlsx procesando algunos pagos."
+            )
+            return
+        
+        file = filedialog.askopenfilename(
+            title="Seleccionar Archivo Excel de Montos",
+            filetypes=[("Archivos Excel", "*.xlsx"), ("Todos los archivos", "*.*")]
+        )
+        if file:
+            self.process_monto_file(file)
             
     def on_drop_payment(self, event):
         """Maneja el evento de arrastrar y soltar en zona de pagos"""
@@ -264,6 +352,23 @@ class PaymentGUI:
                 valid_files.append(filepath)
         if valid_files:
             self.process_confirmations(valid_files)
+    
+    def on_drop_monto(self, event):
+        """Maneja el evento de arrastrar y soltar en zona de montos"""
+        if not self.check_pagos_excel_exists():
+            messagebox.showwarning(
+                "Excel No Existe",
+                "Primero debes generar el archivo Pagos.xlsx procesando algunos pagos."
+            )
+            return
+        
+        files = self.root.tk.splitlist(event.data)
+        valid_files = []
+        for filepath in files:
+            if filepath.lower().endswith('.xlsx'):
+                valid_files.append(filepath)
+        if valid_files:
+            self.process_monto_file(valid_files[0])  # Solo procesar el primer archivo
             
     def process_payments(self, filepaths):
         """Procesa los archivos de pagos"""
@@ -290,6 +395,9 @@ class PaymentGUI:
             self.log("Agregando entradas al Excel...")
             num_added = self.manager.add_to_excel(all_entries)
             self.log(f"Total de registros en Excel: {num_added}")
+            
+            # Actualizar estado de zona de montos después de crear/actualizar Excel
+            self.update_monto_zone_state()
             
             messagebox.showinfo(
                 "Pagos Procesados",
@@ -344,6 +452,132 @@ class PaymentGUI:
                     "Procesado",
                     "El archivo de confirmaciones fue procesado."
                 )
+    
+    def process_monto_file(self, filepath):
+        """Procesa el archivo Excel de montos y actualiza Pagos.xlsx"""
+        if not self.check_pagos_excel_exists():
+            messagebox.showwarning(
+                "Excel No Existe",
+                "Primero debes generar el archivo Pagos.xlsx procesando algunos pagos."
+            )
+            return
+        
+        self.log(f"Procesando archivo de montos: {os.path.basename(filepath)}")
+        
+        # Cargar archivo de montos
+        success = self.manager.load_monto_file(filepath)
+        
+        if not success:
+            self.log("Error al cargar archivo de montos")
+            messagebox.showerror(
+                "Error",
+                "No se pudo cargar el archivo de montos.\nRevisa el log para más detalles."
+            )
+            return
+        
+        # Actualizar Excel existente con valores de Pago semanal
+        try:
+            import pandas as pd
+            
+            # Leer Excel actual con dtype=str para preservar ceros a la izquierda
+            df_pagos = pd.read_excel(
+                self.manager.excel_path, 
+                sheet_name='Pagos', 
+                engine='openpyxl',
+                dtype={'ID': str, 'Ciclo': str, 'Depósito': str}
+            )
+            
+            # Normalizar ID (ya es string, solo asegurar formato)
+            if 'ID' in df_pagos.columns:
+                df_pagos['ID'] = df_pagos['ID'].astype(str).str.replace('.0', '', regex=False).str.replace('nan', '').str.replace('None', '')
+                df_pagos['ID'] = df_pagos['ID'].str.zfill(6)
+            
+            # Normalizar Depósito (ya es string, solo asegurar formato de 9 dígitos)
+            if 'Depósito' in df_pagos.columns:
+                df_pagos['Depósito'] = df_pagos['Depósito'].astype(str).str.replace('.0', '', regex=False).str.replace('nan', '').str.replace('None', '')
+                # Asegurar formato completo de 9 dígitos
+                def fix_deposito(val):
+                    if pd.isna(val) or val == '' or val == 'nan' or val == 'None':
+                        return None
+                    val_str = str(val).strip()
+                    # Si es numérico y tiene menos de 9 dígitos, rellenar
+                    if val_str.replace('.', '').isdigit():
+                        val_str = val_str.split('.')[0]
+                        if len(val_str) < 9:
+                            val_str = val_str.zfill(9)
+                    return val_str
+                df_pagos['Depósito'] = df_pagos['Depósito'].apply(fix_deposito)
+            
+            # Actualizar o agregar columna Pago semanal
+            df_pagos['Pago semanal'] = df_pagos.apply(
+                lambda row: self.manager.get_pago_semanal(
+                    str(row.get('ID', '')).zfill(6),
+                    str(row.get('Tipo', 'Ind')).strip()
+                ), axis=1
+            )
+            
+            # Contar cuántos registros fueron actualizados
+            registros_actualizados = len(df_pagos)
+            registros_encontrados = len(df_pagos[df_pagos['Pago semanal'] != 'No encontrado'])
+            
+            # Guardar Excel actualizado
+            cols_orden = ['Tipo', 'ID', 'Grupo', 'Fecha', 'Hora', 'Pago', 'Ahorro', 'Total', 
+                         'Número de Pago', 'Sucursal', 'Corte', 'Ciclo', 'Concepto', 'Depósito', 'Confirmado', 'Pago semanal']
+            
+            # Asegurar todas las columnas existan
+            for col in cols_orden:
+                if col not in df_pagos.columns:
+                    if col == 'Pago semanal':
+                        df_pagos[col] = 'No encontrado'
+                    else:
+                        df_pagos[col] = None
+            
+            # Asegurar que Depósito sea string para preservar ceros a la izquierda
+            if 'Depósito' in df_pagos.columns:
+                df_pagos['Depósito'] = df_pagos['Depósito'].astype(str)
+            
+            # Reordenar columnas
+            df_pagos = df_pagos.reindex(columns=cols_orden)
+            
+            # Guardar
+            with pd.ExcelWriter(self.manager.excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                df_pagos.to_excel(writer, sheet_name='Pagos', index=False)
+            
+            # Configurar formato de Depósito como texto en Excel
+            import openpyxl
+            wb = openpyxl.load_workbook(self.manager.excel_path)
+            if 'Pagos' in wb.sheetnames:
+                ws = wb['Pagos']
+                for cell in ws[1]:  # Primera fila (encabezados)
+                    if cell.value == 'Depósito':
+                        col_letter = cell.column_letter
+                        # Formatear todas las celdas de la columna Depósito como texto
+                        for row in range(2, ws.max_row + 1):
+                            cell_ref = ws[f'{col_letter}{row}']
+                            cell_ref.number_format = '@'  # @ = texto
+                            # Asegurar que el valor se guarde como string
+                            if cell_ref.value is not None:
+                                cell_ref.value = str(cell_ref.value)
+            wb.save(self.manager.excel_path)
+            wb.close()
+            
+            self.log(f"Archivo de montos procesado: {registros_encontrados}/{registros_actualizados} registros encontraron pago semanal")
+            
+            messagebox.showinfo(
+                "Archivo de Montos Procesado",
+                f"Se actualizó el archivo Pagos.xlsx\n\n"
+                f"Registros actualizados: {registros_actualizados}\n"
+                f"Pagos semanales encontrados: {registros_encontrados}"
+            )
+            
+        except Exception as e:
+            self.log(f"Error actualizando Excel con montos: {e}")
+            import traceback
+            self.log(traceback.format_exc())
+            messagebox.showerror(
+                "Error",
+                f"Error al actualizar el Excel:\n{e}"
+            )
                 
     def log(self, message):
         """Agrega un mensaje al log"""
