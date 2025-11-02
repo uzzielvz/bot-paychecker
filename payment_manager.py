@@ -82,6 +82,40 @@ class PaymentManager:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         
+    def extract_full_name(self, content: str) -> Optional[str]:
+        """
+        Extrae el nombre completo del grupo o cliente sin truncar.
+        Captura TODO el texto entre 'Grupo:'/'Nombre Grupo:'/'Cliente:' y 'ID'.
+        Usa patrones greedy para capturar múltiples palabras completas.
+        Soporta formatos con asteriscos markdown.
+        """
+        # Patrón para Grupo o Nombre Grupo (soporta asteriscos opcionales antes)
+        # Captura TODO hasta encontrar "ID" seguido de número (puede tener asteriscos antes de ID)
+        grupo_pattern = r'(?:\*+\s*)?\*?\s*(?:Nombre\s+)?(?:Grupo|GRUPO)[:\s]+(.+?)\s+(?:\*+\s*)?\*?\s*ID[:\s]+\d+'
+        grupo_match = re.search(grupo_pattern, content, re.IGNORECASE | re.DOTALL)
+        
+        if grupo_match:
+            nombre = grupo_match.group(1).strip()
+            # Limpiar asteriscos markdown, saltos de línea y espacios múltiples
+            nombre = re.sub(r'\*+\s*', '', nombre)
+            nombre = re.sub(r'\s+', ' ', nombre).strip()
+            if nombre:
+                return nombre.upper()
+        
+        # Patrón para Cliente (soporta asteriscos opcionales)
+        cliente_pattern = r'(?:\*+\s*)?\*?\s*Cliente[:\s]+(.+?)\s+(?:\*+\s*)?\*?\s*ID[:\s]+\d+'
+        cliente_match = re.search(cliente_pattern, content, re.IGNORECASE | re.DOTALL)
+        
+        if cliente_match:
+            nombre = cliente_match.group(1).strip()
+            # Limpiar asteriscos markdown, saltos de línea y espacios múltiples
+            nombre = re.sub(r'\*+\s*', '', nombre)
+            nombre = re.sub(r'\s+', ' ', nombre).strip()
+            if nombre:
+                return nombre.upper()
+        
+        return None
+    
     def normalize_sucursal(self, text: str) -> str:
         """Quita acentos de las sucursales"""
         if not text or text.strip() == '':
@@ -118,7 +152,8 @@ class PaymentManager:
     def extract_all_payments_from_lines(self, lines: List[str], filename: str, corte: str = None) -> List[Dict]:
         """Extrae todos los pagos de las líneas del archivo"""
         entries = []
-        msg_pattern = r'\[(\d{2}/\d{2}/\d{2}), (\d{2}:\d{2}:\d{2})\] ([^:]+): (.+)'
+        # Soporta formato con/sin p.m./a.m. y horas con 1 o 2 dígitos
+        msg_pattern = r'\[(\d{2}/\d{2}/\d{2}), (\d{1,2}:\d{2}:\d{2})\s*(?:a\.m\.|p\.m\.)?\] ([^:]+): (.+)'
         
         i = 0
         current_fecha = None
@@ -159,8 +194,12 @@ class PaymentManager:
         """Extrae uno o más pagos del contenido de un mensaje"""
         entries = []
         
-        # Ignorar mensajes del sistema
-        if any(ignore in content for ignore in ['Creaste el grupo', 'cifrados de extremo a extremo']):
+        # Ignorar mensajes del sistema (solo si el contenido COMPLETO es un mensaje del sistema)
+        # No ignorar si contiene información de pago válida
+        if content.strip() in ['Creaste el grupo', 'Los mensajes y las llamadas están cifrados de extremo a extremo. Solo las personas en este chat pueden leerlos, escucharlos o compartirlos.', '']:
+            return entries
+        # Ignorar solo si el contenido empieza con estos textos y no tiene datos de pago
+        if (content.startswith('Creaste el grupo') or content.startswith('Los mensajes y las llamadas están cifrados')) and not re.search(r'(?:Grupo|Cliente|ID\s*\d|Pago)', content, re.IGNORECASE):
             return entries
         
         # Detectar tipo: Individual (Cliente o formato ID+NOMBRE) o Grupal (Grupo)
@@ -186,55 +225,120 @@ class PaymentManager:
             return entries
         
         # Buscar todos los grupos en el contenido (solo para grupales)
-        grupo_pattern = r'(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?:\s+0*\d{6})?\s+ID\s*:?\s*0*(\d{1,6})'
-        grupo_matches = list(re.finditer(grupo_pattern, content, re.IGNORECASE))
+        # Usar extract_full_name para capturar nombres completos sin truncar
+        # Buscar primero dónde están los grupos para procesarlos individualmente
+        grupo_nombre_pattern = r'(?:Grupo|Nombre\s+Grupo|GRUPO)\s*:?\s*'
+        grupo_positions = list(re.finditer(grupo_nombre_pattern, content, re.IGNORECASE))
         
-        if not grupo_matches:
+        if not grupo_positions:
             # Intentar extraer un solo grupo
             single_entry = self.extract_single_payment(content, fecha, hora, filename, corte)
             if single_entry:
                 entries.append(single_entry)
             return entries
         
-        # Extraer datos para cada grupo encontrado
-        for match in grupo_matches:
+        # Para cada posición de grupo encontrada, extraer el nombre completo
+        for grupo_pos_match in grupo_positions:
             try:
-                grupo = match.group(1).strip()
-                payment_id = match.group(2).zfill(6)
+                grupo_start = grupo_pos_match.start()
+                # Extraer el contenido desde este grupo hasta el siguiente o fin
+                siguiente_grupo_match = re.search(r'(?:Grupo|Nombre\s+Grupo)\s*:?\s*', content[grupo_start+1:], re.IGNORECASE)
+                if siguiente_grupo_match:
+                    grupo_content = content[grupo_start:siguiente_grupo_match.start()+grupo_start+1]
+                else:
+                    grupo_content = content[grupo_start:]
                 
-                # Extraer datos después del match de grupo
-                start_pos = match.end()
+                # Extraer nombre completo usando extract_full_name
+                grupo = self.extract_full_name(grupo_content)
+                if not grupo:
+                    # Fallback al patrón anterior si extract_full_name falla
+                    grupo_match = re.search(r'(?:\*+\s*)?\*?\s*(?:Nombre\s+)?(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?:\s|$|\*|:)', grupo_content, re.IGNORECASE)
+                    if grupo_match:
+                        grupo = grupo_match.group(1).strip().upper()
+                    else:
+                        continue
                 
-                # Buscar Pago
-                pago_match = re.search(r'Pago\s*:?\s*\$?\s*([\d,\.]+)', content[start_pos:])
+                # Buscar ID después del nombre del grupo (puede estar en línea separada)
+                # Buscar en las siguientes líneas después del grupo, hasta el siguiente grupo o fin de contenido
+                content_after_grupo = content[grupo_start:]
+                # Buscar el siguiente grupo para delimitar la búsqueda
+                siguiente_grupo_match = re.search(r'(?:\*+\s*)?\*?\s*(?:Nombre\s+)?(?:Grupo|GRUPO)\s*:?\s*', content_after_grupo[1:], re.IGNORECASE)
+                if siguiente_grupo_match:
+                    search_window = content_after_grupo[:siguiente_grupo_match.start()+1]
+                else:
+                    search_window = content_after_grupo[:1000]  # Buscar hasta 1000 caracteres
+                
+                # Buscar ID con varios formatos en la ventana de búsqueda
+                # Soporta: * **ID:**, **ID:**, ID Grupo, ID:, ID
+                # El formato * **ID:** tiene: asterisco, espacio, dos asteriscos, ID, dos puntos, más asteriscos opcionales
+                id_match = re.search(r'\*\s+\*\*ID\*\*\s*:?\s*0*(\d{1,6})|\*\s+\*\*ID\s*:?\s*\*+\s*0*(\d{1,6})|\*\*\s*ID\s*\*\*\s*:?\s*0*(\d{1,6})|\*\*ID\*\*\s*:?\s*0*(\d{1,6})|\*+\s*\*?\s*ID\s*:?\s*\*?\s*0*(\d{1,6})|ID\s+(?:Grupo\s+)?0*(\d{1,6})|ID\s*:?\s*0*(\d{1,6})', search_window, re.IGNORECASE)
+                if not id_match:
+                    continue
+                
+                payment_id = (id_match.group(1) or id_match.group(2) or id_match.group(3) or id_match.group(4) or id_match.group(5) or id_match.group(6) or id_match.group(7)).zfill(6)
+                
+                # Extraer datos después del ID encontrado (relativo a la posición del grupo)
+                id_relative_pos = id_match.end()
+                start_pos = grupo_start + id_relative_pos
+                
+                # Buscar Pago (soporta asteriscos markdown: * **Pago:**, **Pago:**, Pago:)
+                # El formato * **Pago:** tiene asteriscos separados por espacio
+                pago_match = re.search(r'\*\s+\*\*\s*Pago\s*\*?\s*:?\s*\*?\s*\$?\s*([\d,\.]+)|\*\*Pago\*\*\s*:?\s*\$?\s*([\d,\.]+)|\*+\s*\*?\s*Pago\s*:?\s*\*?\s*\$?\s*([\d,\.]+)', content[start_pos:], re.IGNORECASE)
+                if not pago_match:
+                    # Intentar sin asteriscos
+                    pago_match = re.search(r'Pago\s*:?\s*\$?\s*([\d,\.]+)', content[start_pos:], re.IGNORECASE)
                 if not pago_match:
                     continue
-                pago = self.normalize_number(pago_match.group(1))
+                pago = self.normalize_number(pago_match.group(1) or pago_match.group(2) or pago_match.group(3) or pago_match.group(1))
                 
-                # Buscar Ahorro
-                ahorro_match = re.search(r'Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content[start_pos:])
-                ahorro = self.normalize_number(ahorro_match.group(1)) if ahorro_match else 0.0
+                # Buscar Ahorro (soporta asteriscos markdown: * **Ahorro: $X, **Ahorro:**, Ahorro: $X)
+                # El formato * **Ahorro: $X tiene asteriscos separados por espacio
+                ahorro_match = re.search(r'\*\s+\*\*\s*Ahorro\s*\*?\s*:?\s*\$\s*([\d,\.]+)|\*\*Ahorro\*\*\s*:?\s*\$\s*([\d,\.]+)|\*+\s*\*?\s*Ahorro\s*:?\s*\$\s*([\d,\.]+)', content[start_pos:], re.IGNORECASE)
+                if not ahorro_match:
+                    # Intentar con asteriscos pero sin el $ explícito
+                    ahorro_match = re.search(r'\*+\s*\*?\s*Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content[start_pos:], re.IGNORECASE)
+                if not ahorro_match:
+                    # Intentar sin asteriscos
+                    ahorro_match = re.search(r'Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content[start_pos:], re.IGNORECASE)
+                ahorro = self.normalize_number(ahorro_match.group(1) or ahorro_match.group(2) or ahorro_match.group(3) or ahorro_match.group(1)) if ahorro_match else 0.0
                 
-                # Buscar Sucursal
-                sucursal_match = re.search(r'Sucursal\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:N[úu]mero|$))', content[start_pos:])
+                # Buscar Sucursal (soporta asteriscos markdown)
+                sucursal_match = re.search(r'\*+\s*\*?\s*Sucursal\s*:?\s*\*?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:N[úu]mero|$))', content[start_pos:], re.IGNORECASE)
+                if not sucursal_match:
+                    # Intentar sin asteriscos
+                    sucursal_match = re.search(r'Sucursal\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:N[úu]mero|$))', content[start_pos:], re.IGNORECASE)
                 sucursal = sucursal_match.group(1).strip() if sucursal_match else None
                 
-                # Buscar Número de pago
-                num_match = re.search(r'(?:Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content[start_pos:], re.IGNORECASE)
+                # Buscar Número de pago (soporta "Pago semana X" y "Número de pago: X" con asteriscos)
+                num_match = re.search(r'\*+\s*\*?\s*(?:Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*\*?\s*(\d+)', content[start_pos:], re.IGNORECASE)
+                if not num_match:
+                    # Intentar sin asteriscos
+                    num_match = re.search(r'(?:Pago\s+semana|Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content[start_pos:], re.IGNORECASE)
+                if not num_match:
+                    # Intentar formato corto "Pago X"
+                    num_match = re.search(r'Pago\s+(\d+)(?:\s|$)', content[start_pos:], re.IGNORECASE)
                 num_pago = int(num_match.group(1)) if num_match else None
+                # Si no hay número de pago, usar "Pendiente"
+                if num_pago is None:
+                    num_pago = "Pendiente"
                 
-                # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2)
+                # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2) - soporta asteriscos markdown
+                # Buscar primero en todo el content (puede estar fuera del bloque del grupo)
                 ciclo_match = re.search(r'Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
                 if not ciclo_match:
-                    logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: No encontrado")
+                    ciclo_match = re.search(r'\*\*Ciclo\*\*\s*0?(\d+)', content, re.IGNORECASE)
+                if not ciclo_match:
+                    ciclo_match = re.search(r'\*+\s*\*?\s*Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
+                if not ciclo_match:
+                    logging.warning(f"Ciclo no encontrado para ID {payment_id}")
                     continue
                 
                 ciclo_num = int(ciclo_match.group(1))
                 if ciclo_num not in [1, 2]:
-                    logging.warning(f"Ciclo inválido o faltante para ID {payment_id}: {ciclo_num}")
+                    logging.warning(f"Ciclo inválido {ciclo_num} para ID {payment_id}")
                     continue
                 
-                ciclo_formato = f"{ciclo_num:02d}"  # "01" o "02"
+                ciclo_formato = f"{ciclo_num:02d}"
                 
                 # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
                 tipo_code = '2'  # Es grupal
@@ -319,15 +423,17 @@ class PaymentManager:
             if concepto_match:
                 concepto_ind_sin_cliente = concepto_match.group(1).strip()
             
-        # Si no se encontró con formato nuevo, buscar formato tradicional
+        # Si no se encontró con formato nuevo, buscar formato tradicional (soporta "ID Grupo" y "ID:")
         if not payment_id:
-            id_match = re.search(r'ID\s*:?\s*0*(\d{1,6})', content)
+            id_match = re.search(r'ID\s+(?:Grupo\s+)?0*(\d{1,6})|ID\s*:?\s*0*(\d{1,6})', content, re.IGNORECASE)
             if not id_match:
                 return None
-            payment_id = id_match.group(1).zfill(6)
+            payment_id = (id_match.group(1) or id_match.group(2)).zfill(6)
         
-        # Buscar Pago (OPCIONAL para individuales sin Cliente, requerido para otros)
-        pago_match = re.search(r'Pago\s*:?\s*\$?\s*([\d,\.]+)', content)
+        # Buscar Pago (OPCIONAL para individuales sin Cliente, requerido para otros, soporta asteriscos)
+        pago_match = re.search(r'\*+\s*\*?\s*Pago\s*:?\s*\*?\s*\$?\s*([\d,\.]+)', content, re.IGNORECASE)
+        if not pago_match:
+            pago_match = re.search(r'Pago\s*:?\s*\$?\s*([\d,\.]+)', content, re.IGNORECASE)
         if pago_match:
             pago = self.normalize_number(pago_match.group(1))
         else:
@@ -345,8 +451,10 @@ class PaymentManager:
         if not sucursal:
             sucursal = "Pendiente"
         
-        # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2, default "01" si falta)
-        ciclo_match = re.search(r'Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
+        # Buscar Ciclo (OBLIGATORIO, solo acepta 1 o 2, default "01" si falta, soporta asteriscos)
+        ciclo_match = re.search(r'\*+\s*\*?\s*Ciclo\s*\*?\s*:?\s*0?(\d+)', content, re.IGNORECASE)
+        if not ciclo_match:
+            ciclo_match = re.search(r'Ciclo\s*:?\s*0?(\d+)', content, re.IGNORECASE)
         if not ciclo_match:
             # Default: usar "01" si no se encuentra (solo para individuales sin Cliente)
             if es_individual_sin_cliente:
@@ -393,11 +501,15 @@ class PaymentManager:
                 concepto = concepto_ind_sin_cliente if concepto_ind_sin_cliente else "Pendiente de imagen"
             else:
                 # Formato tradicional: "Cliente NOMBRE ID..."
-                cliente_match = re.search(r'Cliente\s+([A-Za-zÀ-ÿ\s]+?)(?=\s+ID)', content, re.IGNORECASE)
-                if not cliente_match:
-                    return None
-                cliente_nombre = cliente_match.group(1).strip()
-                grupo = nombre_config if nombre_config else cliente_nombre.upper()
+                # Usar extract_full_name para capturar nombre completo sin truncar
+                cliente_nombre = self.extract_full_name(content)
+                if not cliente_nombre:
+                    # Fallback al patrón anterior si extract_full_name falla
+                    cliente_match = re.search(r'Cliente\s+([A-Za-zÀ-ÿ\s]+?)(?=\s+ID)', content, re.IGNORECASE)
+                    if not cliente_match:
+                        return None
+                    cliente_nombre = cliente_match.group(1).strip().upper()
+                grupo = nombre_config if nombre_config else cliente_nombre
                 concepto = "Pendiente de imagen"  # Default para formato tradicional
             
             # Reglas para Individual
@@ -407,19 +519,31 @@ class PaymentManager:
             tipo = 'Ind'
             tipo_code = '1'  # Individual
         else:
-            # GRUPAL: Buscar Grupo
-            grupo_match = re.search(r'(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*ID|\s*\d{6})', content)
-            if not grupo_match:
-                return None
-            grupo = grupo_match.group(1).strip()
+            # GRUPAL: Buscar Grupo (soporta asteriscos markdown y "ID Grupo")
+            # Usar extract_full_name para capturar nombre completo sin truncar
+            grupo = self.extract_full_name(content)
+            if not grupo:
+                # Fallback al patrón anterior si extract_full_name falla
+                grupo_match = re.search(r'(?:\*+\s*)?\*?\s*(?:Nombre\s+)?(?:Grupo|GRUPO)\s*:?\s*([A-Za-zÀ-ÿ\s]+?)(?=\s*(?:ID|ID\s+Grupo|\d{6}))', content, re.IGNORECASE)
+                if not grupo_match:
+                    return None
+                grupo = grupo_match.group(1).strip().upper()
             
-            # Buscar Ahorro (solo para grupales)
-            ahorro_match = re.search(r'Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content)
+            # Buscar Ahorro (solo para grupales, soporta asteriscos markdown)
+            ahorro_match = re.search(r'\*+\s*\*?\s*Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content, re.IGNORECASE)
+            if not ahorro_match:
+                ahorro_match = re.search(r'Ahorro\s*:?\s*\$?\s*([\d,\.]+)', content, re.IGNORECASE)
             ahorro = self.normalize_number(ahorro_match.group(1)) if ahorro_match else 0.0
             
-            # Buscar Número de pago (solo para grupales)
-            num_match = re.search(r'(?:Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content, re.IGNORECASE)
+            # Buscar Número de pago (solo para grupales, soporta "Pago semana X")
+            num_match = re.search(r'(?:Pago\s+semana|Número de pago|N[úu]mero de pago|N pago|N Pago)\s*:?\s*(\d+)', content, re.IGNORECASE)
+            if not num_match:
+                # Intentar formato corto "Pago X"
+                num_match = re.search(r'Pago\s+(\d+)(?:\s|$)', content, re.IGNORECASE)
             num_pago = int(num_match.group(1)) if num_match else None
+            # Si no hay número de pago y es grupal, usar "Pendiente"
+            if es_grupal and num_pago is None:
+                num_pago = "Pendiente"
             
             # Calcular Total para grupal
             total_calculado = round(pago + ahorro, 2)
@@ -500,12 +624,15 @@ class PaymentManager:
             with open(filepath, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            msg_pattern = r'\[(\d{2}/\d{2}/\d{2}), (\d{2}:\d{2}:\d{2})\]'
+            # Soporta formato con/sin p.m./a.m. y horas con 1 o 2 dígitos
+            msg_pattern = r'\[(\d{2}/\d{2}/\d{2}), (\d{1,2}:\d{2}:\d{2})\s*(?:a\.m\.|p\.m\.)?\]'
             for line in reversed(lines):
                 match = re.search(msg_pattern, line)
                 if match:
                     fecha = match.group(1)
                     hora = match.group(2)
+                    # Limpiar "p.m./a.m." si estaba presente en la captura
+                    hora = hora.split()[0] if ' ' in hora else hora
                     dd, mm, yy = fecha.split('/')
                     timestamp = f"{yy}/{mm}/{dd} {hora}"
                     return timestamp
