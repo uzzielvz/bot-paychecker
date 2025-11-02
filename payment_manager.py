@@ -341,7 +341,7 @@ class PaymentManager:
                 ciclo_formato = f"{ciclo_num:02d}"
                 
                 # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
-                tipo_code = '2'  # Es grupal
+                tipo_code = '0'  # Es grupal (cambio de '2' a '0')
                 id_str = payment_id.zfill(6)
                 ciclo_str = ciclo_formato.zfill(2)
                 deposito = tipo_code + id_str + ciclo_str
@@ -548,7 +548,7 @@ class PaymentManager:
             # Calcular Total para grupal
             total_calculado = round(pago + ahorro, 2)
             tipo = 'Gpo'
-            tipo_code = '2'  # Grupal
+            tipo_code = '0'  # Grupal (cambio de '2' a '0')
             concepto = "Pendiente de imagen"  # Default para grupales
         
         # Calcular Concepto Depósito: tipo_code(1) + ID(6) + Ciclo(2)
@@ -751,7 +751,7 @@ class PaymentManager:
             if 'Depósito' not in df_new.columns:
                 df_new['Depósito'] = df_new.apply(
                     lambda row: (
-                        ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                        ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '0') +
                         str(row.get('ID', '')).zfill(6) +
                         str(row.get('Ciclo', '01')).zfill(2)
                     ), axis=1
@@ -777,7 +777,7 @@ class PaymentManager:
                         # Calcular Depósito si falta
                         df_new[col] = df_new.apply(
                             lambda row: (
-                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                                ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '0') +
                                 str(row.get('ID', '')).zfill(6) +
                                 str(row.get('Ciclo', '01')).zfill(2)
                             ), axis=1
@@ -847,7 +847,7 @@ class PaymentManager:
                     # Calcular columna 'Depósito' para Excel existente (siempre recalcular)
                     df_existing['Depósito'] = df_existing.apply(
                         lambda row: (
-                            ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                            ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '0') +
                             str(row.get('ID', '')).zfill(6) +
                             str(row.get('Ciclo', '01')).zfill(2)
                         ), axis=1
@@ -865,7 +865,7 @@ class PaymentManager:
                                 # Calcular Depósito si falta
                                 df_existing[col] = df_existing.apply(
                                     lambda row: (
-                                        ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '2') +
+                                        ('1' if str(row.get('Tipo', 'Ind')).strip() == 'Ind' else '0') +
                                         str(row.get('ID', '')).zfill(6) +
                                         str(row.get('Ciclo', '01')).zfill(2)
                                     ), axis=1
